@@ -3,7 +3,11 @@ import re
 from django.core.paginator import Paginator
 from django.db.models import Max, Q, Subquery, OuterRef
 from django.http import Http404
-from django.shortcuts import render
+from django.shortcuts import render, redirect
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
+from search.models import FarmersMarket, Place, RestaurantInspection, Review
+
 
 from restaurants.diet_filters import (
     ALLERGIES,
@@ -235,6 +239,29 @@ def farmers_markets_map(request):
             "day_options": MARKET_DAYS,
         },
     )
+
+
+@login_required
+@require_POST
+def create_farmers_market_review(request):
+    name = request.POST.get("market_name", "").strip()
+    address = request.POST.get("street_address", "").strip()
+    rating_text = request.POST.get("rating", "").strip()
+    text = request.POST.get("review", "").strip()
+    if not name or rating_text not in {"1", "2", "3", "4", "5"} or len(text) > 200:
+        return redirect("search:farmers_markets_map")
+    place, _created = Place.objects.get_or_create(
+        kind=Place.FARMERS_MARKET,
+        external_id=f"{name}|{address}",
+        defaults={"name": name},
+    )
+    Review.objects.create(
+        user=request.user,
+        place=place,
+        rating=int(rating_text),
+        text=text,
+    )
+    return redirect("search:farmers_markets_map")
 
 
 def explore(request, slug):

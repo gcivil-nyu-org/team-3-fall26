@@ -10,4 +10,5 @@ urlpatterns = [
     path("explore/<slug:slug>/", views.explore, name="explore"),
     path("farmers-markets/", views.farmers_markets_map, name="farmers_markets_map"),
     path("restaurant/<str:camis>/", views.restaurant_detail, name="restaurant_detail"),
+    path("farmers-markets/review/", views.create_farmers_market_review, name="create_farmers_market_review"),
 ]
