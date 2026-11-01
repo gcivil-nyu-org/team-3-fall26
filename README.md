@@ -1,6 +1,6 @@
 # Team Project repo
 
-[![Build Status](https://app.travis-ci.com/NovaBro/team-3-fall26.svg?branch=develop)](https://app.travis-ci.com/NovaBro/team-3-fall26)
+[![CI](https://github.com/NovaBro/team-3-fall26/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/NovaBro/team-3-fall26/actions/workflows/ci.yml)
 [![Coverage Status](https://coveralls.io/repos/github/NovaBro/team-3-fall26/badge.svg?branch=develop)](https://coveralls.io/github/NovaBro/team-3-fall26?branch=develop)
 
 NYC food / open-data search project. Raw datasets live in `database/datasets/`.
@@ -130,3 +130,29 @@ After pulling changes to the models or datasets, rebuild your local database:
 ```bash
 .venv/bin/python manage.py test
 ```
+
+## Elastic Beanstalk
+
+The live site is http://nycfood-env.eba-jht3rtv2.us-east-1.elasticbeanstalk.com. The Elastic Beanstalk application is `nycfood`, the environment is `nycfood-env`, and the region is `us-east-1`. Deploys are manual from a laptop. GitHub does not deploy the site.
+
+First time, after the local setup above:
+
+```bash
+pip install awsebcli
+aws configure
+eb init          # region us-east-1, existing application "nycfood"
+eb use nycfood-env
+```
+
+Day-to-day deploy, from an up-to-date `develop` with a clean `git status`:
+
+```bash
+.venv/bin/python manage.py test
+eb deploy nycfood-env
+```
+
+`eb deploy` uploads the working directory, filtered by `.ebignore`, not the GitHub commit. The instance installs `requirements.txt`. Each deploy replaces the live `database/nyc_food.db` and the instance `media/` folder, so accounts and uploaded pictures on the site are lost. One person deploys at a time. API keys are already in SSM Parameter Store; a local `.env` is not required to deploy.
+
+If the deploy fails, run `eb logs nycfood-env` and read `eb-engine.log` and `web.stdout.log`.
+
+More detail: [md_guides/deploy_workflow.md](md_guides/deploy_workflow.md) (checklist and team rules) and [md_guides/aws_deployment.md](md_guides/aws_deployment.md) (IAM, SSM, and troubleshooting).
