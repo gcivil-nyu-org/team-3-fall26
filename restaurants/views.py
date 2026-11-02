@@ -12,7 +12,7 @@ from restaurants.places import PlacesError, get_photo_url, get_restaurants
 
 
 def search(request):
-    # Any query string means the user submitted the form; an empty one is the landing page.
+    # A query string means the form was submitted; an empty one is the landing page.
     form = RestaurantFilterForm(request.GET or None)
     restaurants, error = [], ""
     location = None
@@ -47,7 +47,9 @@ def search(request):
             "restaurants": restaurants,
             "error": error,
             "location": location,
-            "avoiding_allergens": bool(form.is_bound and form.is_valid() and form.cleaned_data["avoid"]),
+            "avoiding_allergens": bool(
+                form.is_bound and form.is_valid() and form.cleaned_data["avoid"]
+            ),
             "map_points": [
                 _map_point(r)
                 for r in restaurants
@@ -71,10 +73,18 @@ def _map_point(r):
         "rating": r.get("rating"),
         "rating_count": r.get("rating_count"),
         "maps_url": r.get("maps_url", ""),
-        "photo_url": reverse("restaurants:photo") + "?" + urlencode({"name": photo}) if photo else "",
+        "photo_url": (
+            reverse("restaurants:photo") + "?" + urlencode({"name": photo})
+            if photo
+            else ""
+        ),
         "has_inspection": bool(inspection),
         "grade": inspection.get("grade", ""),
-        "detail_url": reverse("search:restaurant_detail", args=[inspection["camis"]]) if inspection else "",
+        "detail_url": (
+            reverse("search:restaurant_detail", args=[inspection["camis"]])
+            if inspection
+            else ""
+        ),
     }
 
 

@@ -12,7 +12,8 @@ from django.conf import settings
 from django.db import transaction
 from django.utils.dateparse import parse_datetime
 
-from search.models import PlaceEnrichment, PlaceReview, RestaurantInspection
+from community.models import PlaceEnrichment, PlaceReview
+from search.models import RestaurantInspection
 
 PLACES_BASE_URL = "https://places.googleapis.com/v1"
 SEARCH_FIELD_MASK = (
@@ -85,9 +86,7 @@ def find_place(query):
 
 def get_place_details(place_id):
     """Fetch full details (rating, price, reviews, ...) for a place ID."""
-    return _request(
-        "GET", f"{PLACES_BASE_URL}/places/{place_id}", DETAILS_FIELD_MASK
-    )
+    return _request("GET", f"{PLACES_BASE_URL}/places/{place_id}", DETAILS_FIELD_MASK)
 
 
 def build_query(restaurant):
@@ -151,7 +150,7 @@ def _save(camis, details):
     return enrichment
 
 
-@transaction.atomic
+@transaction.atomic(using="community")
 def enrich_camis(camis):
     """Look up a restaurant on Google and persist its data.
 

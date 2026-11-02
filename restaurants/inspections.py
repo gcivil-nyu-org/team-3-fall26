@@ -14,18 +14,40 @@ from search.models import RestaurantInspection
 
 # Neighborhood tags Google often adds to a restaurant's name.
 PLACE_WORDS = [
-    "EAST VILLAGE", "UPPER WEST SIDE", "UPPER WEST", "UWS", "ASTORIA", "WILLIAMSBURG",
-    "MIDTOWN EAST", "MIDTOWN", "BRYANT PARK", "BROOKLYN", "NYC", "MANHATTAN",
+    "EAST VILLAGE",
+    "UPPER WEST SIDE",
+    "UPPER WEST",
+    "UWS",
+    "ASTORIA",
+    "WILLIAMSBURG",
+    "MIDTOWN EAST",
+    "MIDTOWN",
+    "BRYANT PARK",
+    "BROOKLYN",
+    "NYC",
+    "MANHATTAN",
 ]
 STREET_ABBR = {
-    "AVENUE": "AVE", "STREET": "ST", "BOULEVARD": "BLVD", "PLACE": "PL", "ROAD": "RD",
-    "DRIVE": "DR", "EAST": "E", "WEST": "W", "NORTH": "N", "SOUTH": "S",
+    "AVENUE": "AVE",
+    "STREET": "ST",
+    "BOULEVARD": "BLVD",
+    "PLACE": "PL",
+    "ROAD": "RD",
+    "DRIVE": "DR",
+    "EAST": "E",
+    "WEST": "W",
+    "NORTH": "N",
+    "SOUTH": "S",
 }
 MIN_LOOSE_LEN = 5  # shortest name allowed for a partial (loose) name match
 
 
 def _strip_accents(text):
-    return "".join(c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c))
+    return "".join(
+        c
+        for c in unicodedata.normalize("NFKD", text or "")
+        if not unicodedata.combining(c)
+    )
 
 
 def normalize_name(text, drop_places=False):
@@ -59,7 +81,11 @@ def google_zip(address):
 
 def _restaurants_in_zip(zipcode):
     """One (camis, name, street) per restaurant in a ZIP code."""
-    rows = RestaurantInspection.objects.filter(zipcode=zipcode).values_list("camis", "dba", "street").distinct()
+    rows = (
+        RestaurantInspection.objects.filter(zipcode=zipcode)
+        .values_list("camis", "dba", "street")
+        .distinct()
+    )
     return list(rows)
 
 
@@ -74,7 +100,9 @@ def _match(name, address, candidates):
             continue
         if nyc_name == wanted:
             exact.add(camis)
-        elif (nyc_name in wanted or wanted in nyc_name) and min(len(nyc_name), len(wanted)) >= MIN_LOOSE_LEN:
+        elif (nyc_name in wanted or wanted in nyc_name) and min(
+            len(nyc_name), len(wanted)
+        ) >= MIN_LOOSE_LEN:
             if street and normalize_street(nyc_street) == street:
                 loose.add(camis)
     found = exact or loose
@@ -100,10 +128,14 @@ def attach_inspections(places):
         zipcode = google_zip(place.get("address"))
         if zipcode and zipcode not in by_zip:
             by_zip[zipcode] = _restaurants_in_zip(zipcode)
-        camis = _match(place["name"], place.get("address"), by_zip.get(zipcode, [])) if zipcode else None
+        camis = (
+            _match(place["name"], place.get("address"), by_zip.get(zipcode, []))
+            if zipcode
+            else None
+        )
         matches.append(camis)
 
-    # Two different Google places pointing at one NYC restaurant means at least one is wrong.
+    # Two Google places pointing at one NYC restaurant means at least one is wrong.
     owners = defaultdict(set)
     for place, camis in zip(places, matches):
         if camis:

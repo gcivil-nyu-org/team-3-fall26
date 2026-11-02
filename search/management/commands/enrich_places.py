@@ -14,7 +14,8 @@ import time
 
 from django.core.management.base import BaseCommand, CommandError
 
-from search.models import PlaceEnrichment, RestaurantInspection
+from community.models import PlaceEnrichment
+from search.models import RestaurantInspection
 from search.services.places import PlacesAPIError, enrich_camis
 
 
@@ -64,9 +65,7 @@ class Command(BaseCommand):
             else:
                 done += 1
                 self.stdout.write(
-                    self.style.SUCCESS(
-                        f"{camis}: {enrichment.display_name or 'saved'}"
-                    )
+                    self.style.SUCCESS(f"{camis}: {enrichment.display_name or 'saved'}")
                 )
             if options["sleep"] and index < len(camis_list) - 1:
                 time.sleep(options["sleep"])

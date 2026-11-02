@@ -27,6 +27,10 @@ database/*.sqlite3
 .env
 .env.*
 !.env.example
-# Ds store files
+
+# macOS
 .DS_Store
 ./database/.DS_Store
+
+# User uploads
+media/

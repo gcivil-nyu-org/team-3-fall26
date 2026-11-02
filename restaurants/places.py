@@ -9,6 +9,8 @@ API at request time and store nothing.
 
 import math
 import os
+import re
+import unicodedata
 
 import requests
 
@@ -26,9 +28,18 @@ FIELD_MASK = ",".join(
         "places.googleMapsUri",
         "places.primaryType",
         "places.types",
+        "places.addressComponents",
         "places.rating",
         "places.userRatingCount",
         "places.photos",
+    ]
+)
+HOMEPAGE_FIELD_MASK = ",".join(
+    [
+        "places.displayName",
+        "places.formattedAddress",
+        "places.priceLevel",
+        "places.addressComponents",
     ]
 )
 
@@ -67,10 +78,33 @@ def distance_m(lat1, lng1, lat2, lng2):
 
 def _normalize(place):
     location = place.get("location", {})
+    components = place.get("addressComponents", [])
+
+    def component(kind):
+        return next(
+            (
+                item.get("longText", "")
+                for item in components
+                if kind in item.get("types", [])
+            ),
+            "",
+        )
+
+    street = " ".join(
+        part for part in (component("street_number"), component("route")) if part
+    )
+    if not street:
+        street = place.get("formattedAddress", "").split(",", 1)[0]
+    zipcode = component("postal_code")
+    if not zipcode:
+        match = re.search(r"\b(\d{5})(?:-\d{4})?\b", place.get("formattedAddress", ""))
+        zipcode = match.group(1) if match else ""
     return {
         "id": place.get("id", ""),
         "name": place.get("displayName", {}).get("text", "(no name)"),
         "address": place.get("formattedAddress", ""),
+        "street": street,
+        "zipcode": zipcode,
         "price": PRICE_LABELS.get(place.get("priceLevel", ""), ""),
         "vegetarian": place.get("servesVegetarianFood"),  # True / False / None
         "lat": location.get("latitude"),
@@ -84,10 +118,102 @@ def _normalize(place):
     }
 
 
+def _match_value(value):
+    value = unicodedata.normalize("NFKD", value or "")
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
+def _match_street(value):
+    value = re.sub(r"^\s*\d+[A-Za-z]?(?:-\d+[A-Za-z]?)?\s+", "", value or "")
+    aliases = {
+        "avenue": "ave",
+        "boulevard": "blvd",
+        "drive": "dr",
+        "road": "rd",
+        "street": "st",
+        "lane": "ln",
+        "place": "pl",
+        "court": "ct",
+        "north": "n",
+        "south": "s",
+        "east": "e",
+        "west": "w",
+    }
+    return " ".join(aliases.get(word, word) for word in _match_value(value).split())
+
+
+def find_restaurant_place(name, zipcode, street, api_key=None):
+    """Find one confident Google Places match for an NYC inspection record."""
+    api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key or not name or not zipcode:
+        return None
+
+    try:
+        response = requests.post(
+            SEARCH_URL,
+            json={
+                "textQuery": f"{name} {zipcode}, New York, NY",
+                "maxResultCount": 10,
+                "languageCode": "en",
+                "locationRestriction": {"rectangle": NYC_BOUNDS},
+            },
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": api_key,
+                "X-Goog-FieldMask": HOMEPAGE_FIELD_MASK,
+            },
+            timeout=8,
+        )
+    except requests.RequestException:
+        return None
+    if response.status_code != 200:
+        return None
+
+    target_name = _match_value(name)
+    target_street = _match_street(street)
+    try:
+        candidates = [_normalize(place) for place in response.json().get("places", [])]
+    except (TypeError, ValueError):
+        return None
+    candidates = [place for place in candidates if place.get("zipcode") == zipcode]
+    exact = [
+        place for place in candidates if _match_value(place["name"]) == target_name
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    if target_street:
+        exact_street = [
+            place for place in exact if _match_street(place["street"]) == target_street
+        ]
+        if len(exact_street) == 1:
+            return exact_street[0]
+
+        partial_street = [
+            place
+            for place in candidates
+            if _match_value(place["name"]) != target_name
+            and (
+                target_name in _match_value(place["name"])
+                or _match_value(place["name"]) in target_name
+            )
+            and _match_street(place["street"]) == target_street
+        ]
+        if len(partial_street) == 1:
+            return partial_street[0]
+    return None
+
+
 def build_request(
-    area="", prices=(), diet="", lat=None, lng=None, radius_m=None,
+    area="",
+    prices=(),
+    diet="",
+    lat=None,
+    lng=None,
+    radius_m=None,
     cuisine="",
-    open_now=False, min_rating=None,
+    open_now=False,
+    min_rating=None,
 ):
     """Return the JSON body for a Text Search request."""
     area = (area or "").strip()
@@ -131,8 +257,17 @@ def build_request(
 
 
 def get_restaurants(
-    area="", prices=(), diet="", lat=None, lng=None, radius_m=None, avoid=(), cuisine="",
-    open_now=False, min_rating=None, api_key=None,
+    area="",
+    prices=(),
+    diet="",
+    lat=None,
+    lng=None,
+    radius_m=None,
+    avoid=(),
+    cuisine="",
+    open_now=False,
+    min_rating=None,
+    api_key=None,
 ):
     """Return a list of restaurant dicts matching every given filter.
 
@@ -148,9 +283,15 @@ def get_restaurants(
         raise PlacesError("GOOGLE_API_KEY is not set. Add it to your .env file.")
 
     body = build_request(
-        area, prices, diet, lat, lng, radius_m,
+        area,
+        prices,
+        diet,
+        lat,
+        lng,
+        radius_m,
         cuisine=cuisine,
-        open_now=open_now, min_rating=min_rating,
+        open_now=open_now,
+        min_rating=min_rating,
     )
     try:
         resp = requests.post(
@@ -188,19 +329,23 @@ def get_restaurants(
     if lat is not None and lng is not None:
         for p in places:
             if p["lat"] is not None and p["lng"] is not None:
-                p["distance_mi"] = distance_m(lat, lng, p["lat"], p["lng"]) / METERS_PER_MILE
+                p["distance_mi"] = (
+                    distance_m(lat, lng, p["lat"], p["lng"]) / METERS_PER_MILE
+                )
         if radius_m:
             limit_mi = radius_m / METERS_PER_MILE
-            places = [p for p in places if p["distance_mi"] is not None and p["distance_mi"] <= limit_mi]
+            places = [
+                p
+                for p in places
+                if p["distance_mi"] is not None and p["distance_mi"] <= limit_mi
+            ]
         places.sort(key=lambda p: (p["distance_mi"] is None, p["distance_mi"] or 0))
 
     return places
 
 
 # --- pin popup: one photo for a place (Google Places Photos, New) ---
-import re as _re
-
-_PHOTO_NAME = _re.compile(r"^places/[A-Za-z0-9_-]+/photos/[A-Za-z0-9_-]+$")
+_PHOTO_NAME = re.compile(r"^places/[A-Za-z0-9_-]+/photos/[A-Za-z0-9_-]+$")
 
 
 def get_photo_url(name, api_key=None, max_width=400):

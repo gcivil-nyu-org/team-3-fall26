@@ -2,14 +2,15 @@
 URL configuration for nycfood project.
 """
 
-from django.contrib import admin
 from django.conf import settings
-from django.urls import include, path
 from django.conf.urls.static import static
+from django.contrib import admin
+from django.urls import include, path
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("accounts.urls")),
+    path("community/", include("community.urls")),
     path("restaurants/", include("restaurants.urls")),
     path("", include("search.urls")),
 ]

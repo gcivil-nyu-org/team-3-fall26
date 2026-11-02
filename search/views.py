@@ -1,5 +1,5 @@
-import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -9,9 +9,6 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET, require_POST
 
-from restaurants.forms import AREA_CHOICES, DIET_CHOICES, PRICE_CHOICES, RestaurantFilterForm
-from restaurants.places import PlacesError, get_restaurants
-from search.models import FarmersMarket, HealthyStore, PlaceEnrichment, RestaurantInspection
 from restaurants.diet_filters import (
     ALLERGIES,
     ALLERGY_CHOICES,
@@ -19,7 +16,16 @@ from restaurants.diet_filters import (
     HOMEPAGE_DIET_CHOICES,
     risky_cuisines,
 )
-from search.models import FarmersMarket, RestaurantInspection
+from restaurants.forms import (
+    AREA_CHOICES,
+    DIET_CHOICES,
+    PRICE_CHOICES,
+    RestaurantFilterForm,
+)
+from community.keys import dohmh_key, farmers_market_key, google_key, grocery_key
+from community.models import PlaceEnrichment
+from restaurants.places import PlacesError, find_restaurant_place, get_restaurants
+from search.models import FarmersMarket, HealthyStore, RestaurantInspection
 from search.registry import DATASETS
 from search.services.places import PlacesAPIError, enrich_camis
 
@@ -69,7 +75,9 @@ def _market_operates_on_day(days_of_operation, selected_day):
             continue
         found_days.add(day_index)
         if index + 1 < len(matches):
-            between = days_of_operation[match.end() : matches[index + 1].start()]
+            between = days_of_operation[
+                match.end() : matches[index + 1].start()  # noqa: E203
+            ]
             if re.fullmatch(r"\s*[-–]\s*", between):
                 next_day = next(
                     (
@@ -120,9 +128,9 @@ def index(request):
         base = _filter_restaurants(
             RestaurantInspection.objects.all(), name, boro, zipcode, grade, diet, avoid
         )
-        latest = RestaurantInspection.objects.filter(
-            camis=OuterRef("camis")
-        ).order_by("-inspection_date")
+        latest = RestaurantInspection.objects.filter(camis=OuterRef("camis")).order_by(
+            "-inspection_date"
+        )
         restaurants = (
             base.values("camis")
             .annotate(
@@ -158,6 +166,64 @@ def index(request):
     )
 
 
+def home(request):
+    selected_boro = request.GET.get("boro", "").strip()
+    borough_options = list(
+        RestaurantInspection.objects.exclude(boro="")
+        .exclude(boro__isnull=True)
+        .values_list("boro", flat=True)
+        .distinct()
+        .order_by("boro")
+    )
+    restaurant_rows = (
+        RestaurantInspection.objects.exclude(dba="")
+        .values("camis")
+        .annotate(
+            name=Max("dba"),
+            boro=Max("boro"),
+            street=Max("street"),
+            zipcode=Max("zipcode"),
+            cuisine=Max("cuisine"),
+        )
+        .order_by("name", "camis")
+    )
+    if selected_boro in borough_options:
+        restaurant_rows = restaurant_rows.filter(boro__iexact=selected_boro)
+    else:
+        selected_boro = ""
+    page_obj = Paginator(restaurant_rows, 16).get_page(request.GET.get("page"))
+    restaurants = list(page_obj.object_list)
+    for row in restaurants:
+        row["image"] = "search/images/nyc-restaurant.jpg"
+
+    # Place searches supplement the CSV fields that are absent, such as a full
+    # street address, price level, and Google Maps link. Failed searches leave
+    # the underlying CSV card intact.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        lookups = [
+            executor.submit(
+                find_restaurant_place,
+                row["name"],
+                row["zipcode"],
+                row["street"],
+            )
+            for row in restaurants
+        ]
+        for row, lookup in zip(restaurants, lookups):
+            row["google"] = lookup.result()
+
+    return render(
+        request,
+        "search/home.html",
+        {
+            "restaurants": restaurants,
+            "page_obj": page_obj,
+            "borough_options": borough_options,
+            "selected_boro": selected_boro,
+        },
+    )
+
+
 def restaurant_detail(request, camis):
     inspections = RestaurantInspection.objects.filter(camis=camis).order_by(
         "-inspection_date"
@@ -166,9 +232,7 @@ def restaurant_detail(request, camis):
     if latest is None:
         raise Http404("Restaurant not found")
     place = (
-        PlaceEnrichment.objects.filter(camis=camis)
-        .prefetch_related("reviews")
-        .first()
+        PlaceEnrichment.objects.filter(camis=camis).prefetch_related("reviews").first()
     )
     return render(
         request,
@@ -243,8 +307,7 @@ def farmers_markets_map(request):
                     or zipcode in market["street_address"]
                 )
                 and (
-                    not day
-                    or _market_operates_on_day(market["days_of_operation"], day)
+                    not day or _market_operates_on_day(market["days_of_operation"], day)
                 )
             ):
                 markets.append(market)
@@ -353,6 +416,10 @@ def _combined_static_points(name="", boro="", zipcode=""):
                     "lat": data["latitude"],
                     "lng": data["longitude"],
                     "category": "farmers_market",
+                    "kind": "farmers_market",
+                    "key": farmers_market_key(
+                        market.year, market.market_name, market.street_address
+                    ),
                     "address": data["street_address"] or "",
                     "url": None,
                 }
@@ -376,6 +443,10 @@ def _combined_static_points(name="", boro="", zipcode=""):
                 "lat": store.latitude,
                 "lng": store.longitude,
                 "category": "grocery",
+                "kind": "grocery",
+                "key": grocery_key(
+                    store.store_name, store.street_address, store.zip_code
+                ),
                 "address": store.street_address or "",
                 "url": None,
             }
@@ -407,6 +478,8 @@ def _combined_static_points(name="", boro="", zipcode=""):
                 "lat": place.latitude,
                 "lng": place.longitude,
                 "category": "restaurant_dohmh",
+                "kind": "restaurant_dohmh",
+                "key": dohmh_key(place.camis),
                 "address": place.formatted_address or "",
                 "url": reverse("search:restaurant_detail", args=[place.camis]),
             }
@@ -429,8 +502,8 @@ def combined_map(request):
             "zip": zipcode,
             "boro_options": BOROUGHS,
             "static_points": static_points,
-            "maps_key": os.environ.get("GOOGLE_MAPS_JS_KEY", ""),
             "google_url": reverse("search:combined_map_google"),
+            "login_url": reverse("accounts:login"),
             "area_choices": AREA_CHOICES,
             "price_choices": PRICE_CHOICES,
             "diet_choices": DIET_CHOICES,
@@ -465,6 +538,8 @@ def combined_map_google(request):
             "lat": restaurant["lat"],
             "lng": restaurant["lng"],
             "category": "restaurant_google",
+            "kind": "restaurant_google",
+            "key": google_key(restaurant.get("id") or ""),
             "address": restaurant.get("address") or "",
             "url": restaurant.get("maps_url") or None,
         }

@@ -37,8 +37,11 @@ class UserProfileForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.instance and self.instance.pk:
-            self.fields["email"].initial = self.instance.user.email
+        user = getattr(self.instance, "user", None)
+        if user is not None and getattr(user, "pk", None):
+            self.fields["email"].initial = user.email
+            self.fields["first_name"].initial = user.first_name
+            self.fields["last_name"].initial = user.last_name
 
     # Declared so an empty checkbox list doesn't hit JSONField.bound_data,
     # which crashes on non-string values (Django quirk with CheckboxSelectMultiple).
@@ -48,6 +51,8 @@ class UserProfileForm(forms.ModelForm):
         widget=forms.CheckboxSelectMultiple,
         label="Health goals",
     )
+    first_name = forms.CharField(required=False, max_length=150, label="First name")
+    last_name = forms.CharField(required=False, max_length=150, label="Last name")
     age = forms.IntegerField(
         required=False,
         min_value=1,
@@ -97,11 +102,15 @@ class UserProfileForm(forms.ModelForm):
             "allergies",
         )
         widgets = {
-            "home_address": forms.TextInput(attrs={"placeholder": "Street, Brooklyn, NY"}),
+            "home_address": forms.TextInput(
+                attrs={"placeholder": "Street, Brooklyn, NY"}
+            ),
             "favorite_foods": forms.TextInput(
                 attrs={"placeholder": "pizza, dumplings, tacos"}
             ),
-            "disliked_foods": forms.TextInput(attrs={"placeholder": "mushrooms, olives"}),
+            "disliked_foods": forms.TextInput(
+                attrs={"placeholder": "mushrooms, olives"}
+            ),
             "allergies": forms.TextInput(attrs={"placeholder": "peanuts, shellfish"}),
             "health_goals": forms.CheckboxSelectMultiple,
         }
@@ -117,11 +126,31 @@ class UserProfileForm(forms.ModelForm):
             "home_address": {"max_length": "Address must be 255 characters or fewer."},
         }
 
+    field_order = [
+        "first_name",
+        "last_name",
+        "name",
+        "email",
+        "home_address",
+        "age",
+        "gender",
+        "weight_lbs",
+        "height_in",
+        "favorite_foods",
+        "disliked_foods",
+        "health_goals",
+        "allergies",
+        "picture",
+    ]
+
     def clean_email(self):
         email = self.cleaned_data["email"]
-        if email and User.objects.filter(email__iexact=email).exclude(
-            pk=self.instance.user_id
-        ).exists():
+        if (
+            email
+            and User.objects.filter(email__iexact=email)
+            .exclude(pk=self.instance.user_id)
+            .exists()
+        ):
             raise forms.ValidationError("An account with this email already exists.")
         return email
 
