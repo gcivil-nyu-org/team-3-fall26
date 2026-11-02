@@ -133,25 +133,16 @@ After pulling changes to the models or datasets, rebuild your local database:
 
 ## Elastic Beanstalk
 
-The live site is http://nycfood-env.eba-jht3rtv2.us-east-1.elasticbeanstalk.com. The Elastic Beanstalk application is `nycfood`, the environment is `nycfood-env`, and the region is `us-east-1`. Deploys are manual from a laptop. GitHub does not deploy the site.
+The live site is http://nycfood-env.eba-jht3rtv2.us-east-1.elasticbeanstalk.com. The Elastic Beanstalk application is `nycfood`, the environment is `nycfood-env`, and the region is `us-east-1`. A push to `develop` on `gcivil-nyu-org/team-3-fall26` runs tests, then GitHub Actions deploys that commit with `eb deploy nycfood-env`. The workflow assumes the IAM role `github-nycfood-deploy`; no AWS keys are stored in GitHub.
 
-First time, after the local setup above:
-
-```bash
-pip install awsebcli
-aws configure
-eb init          # region us-east-1, existing application "nycfood"
-eb use nycfood-env
-```
-
-Day-to-day deploy, from an up-to-date `develop` with a clean `git status`:
+The instance downloads `database/nyc_food.db` and `database/community.db` from the private bucket `nycfood-databases-322134621417` before migrate. Those files are not in Git and are not in the deploy bundle. Django still opens them as local SQLite files. Rows written on the live site, and files in `media/`, are replaced by the next deploy. To change the canonical databases, upload them again:
 
 ```bash
-.venv/bin/python manage.py test
-eb deploy nycfood-env
+aws s3 cp database/nyc_food.db s3://nycfood-databases-322134621417/nyc_food.db
+aws s3 cp database/community.db s3://nycfood-databases-322134621417/community.db
 ```
 
-`eb deploy` uploads the working directory, filtered by `.ebignore`, not the GitHub commit. The instance installs `requirements.txt`. Each deploy replaces the live `database/nyc_food.db` and the instance `media/` folder, so accounts and uploaded pictures on the site are lost. One person deploys at a time. API keys are already in SSM Parameter Store; a local `.env` is not required to deploy.
+Before the first Actions deploy, create that bucket, upload both files, and attach `deploy/s3-db-read-policy.json` to the instance role `aws-elasticbeanstalk-ec2-role`. A failed download fails the deploy. API keys come from SSM Parameter Store.
 
 If the deploy fails, run `eb logs nycfood-env` and read `eb-engine.log` and `web.stdout.log`.
 

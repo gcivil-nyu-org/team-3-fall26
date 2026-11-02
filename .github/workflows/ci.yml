@@ -47,3 +47,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: coverage.lcov
           format: lcov
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && github.repository == 'gcivil-nyu-org/team-3-fall26'
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install EB CLI
+        run: pip install awsebcli
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::322134621417:role/github-nycfood-deploy
+          aws-region: us-east-1
+
+      - name: Deploy
+        run: eb deploy nycfood-env

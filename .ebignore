@@ -1,4 +1,6 @@
-# Keep database/nyc_food.db in the deploy bundle; raw datasets are only needed for import_datasets.
+# Databases are downloaded from s3://nycfood-databases-322134621417 on deploy.
+# Raw datasets are only needed for import_datasets.
+database/*.db
 database/datasets/
 test.txt
 deploy/

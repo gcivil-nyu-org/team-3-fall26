@@ -2,48 +2,45 @@
 
 How code gets from GitHub to http://nycfood-team3.us-east-1.elasticbeanstalk.com. For the AWS setup itself (SSM secrets, IAM, troubleshooting), see `aws_deployment.md`.
 
-Deploys are **manual**: GitHub and Elastic Beanstalk are not connected. Someone pulls the code to their laptop and runs `eb deploy`; the site then runs whatever was in that person's project folder.
+A push to `develop` on `gcivil-nyu-org/team-3-fall26` runs the test job, then the deploy job in `.github/workflows/ci.yml`. That job assumes the IAM role `github-nycfood-deploy` and runs `eb deploy nycfood-env`. Pull requests run tests only. The same workflow on a fork cannot assume the role.
 
 ```
-GitHub (develop)
-   │  git pull
+GitHub (gcivil-nyu-org develop)
+   │  push
    ▼
-your laptop: working directory  (+ local database/nyc_food.db, + uncommitted edits)
-   │  eb deploy nycfood-env
+GitHub Actions: test, then eb deploy nycfood-env
+   │
    ▼
-S3 bundle  ──►  EC2 instance  ──►  live site
+S3 bundle  ──►  EC2 instance
+                 │  download nyc_food.db and community.db
+                 ▼
+               live site
 ```
 
 ## Deploy checklist
 
-```bash
-git checkout develop
-git pull origin develop
-.venv/bin/python -m pip install -r requirements.txt   # if requirements changed
-.venv/bin/python manage.py migrate                    # if there are new migrations
-.venv/bin/python manage.py test
-git status                                            # must be clean
-eb deploy nycfood-env
-eb open
-```
+Merge into `develop` on `gcivil-nyu-org/team-3-fall26`. The Actions deploy job runs after tests pass. After it finishes, click through search, the combined map, and login/signup. If something is wrong, check the Actions log, then `eb status`, `eb events`, and `eb logs`.
 
-After deploying, click through search, the combined map, and login/signup. If something is wrong, check `eb status`, `eb events`, and `eb logs`.
+A laptop `eb deploy nycfood-env` still deploys the working directory, with the same `.ebignore` rules. The instance then replaces `database/*.db` with the S3 copies.
 
 ## What actually gets deployed
 
-Because `.ebignore` exists, `eb deploy` zips the **working directory as it is on disk**, minus what `.ebignore` excludes. It does not deploy a GitHub commit or branch.
+Because `.ebignore` exists, `eb deploy` zips the working directory, minus what `.ebignore` excludes. On GitHub Actions that directory is the `develop` commit. On a laptop it is whatever is on disk, including uncommitted edits.
 
 | On your laptop | Goes live? |
 |----------------|------------|
-| Uncommitted edits | Yes |
-| Commits not yet pushed to GitHub | Yes |
-| `database/nyc_food.db` (gitignored, never on GitHub) | Yes, and it replaces the live database |
+| Uncommitted edits, on a laptop `eb deploy` | Yes |
+| Commits not yet pushed to GitHub, on a laptop `eb deploy` | Yes |
+| `database/nyc_food.db` and `database/community.db` | No. `.ebignore` excludes `database/*.db`. The instance downloads both from `s3://nycfood-databases-322134621417` |
 | `.env` | No (excluded); live keys come from SSM |
 | `.venv/`, `database/datasets/`, notebooks, `md_guides/`, `deploy/` | No (excluded) |
 
-So a clean `git status` on an up-to-date `develop` is what makes "the site matches GitHub" true.
+Actions deploys the Git commit, so uncommitted laptop files are not in that bundle. The live SQLite files are whatever was last uploaded to the database bucket. Rows written on the instance, and files in `media/`, are replaced on the next deploy. Upload new canonical databases with:
 
-**The live database is overwritten on every deploy.** User accounts created on the site and Google data cached there are replaced by the deployer's local `nyc_food.db`. This lasts until the database moves to RDS.
+```bash
+aws s3 cp database/nyc_food.db s3://nycfood-databases-322134621417/nyc_food.db
+aws s3 cp database/community.db s3://nycfood-databases-322134621417/community.db
+```
 
 ## Branches and environments
 
@@ -84,11 +81,10 @@ A `.env` file is only needed to run the site locally with Google features, not t
 
 ## Team rules
 
-- **Deploy only from an up-to-date `develop`** with a clean `git status`.
-- **One deployer at a time.** Announce deploys in the team chat. Two people deploying from different laptops overwrite each other's code and database.
+- **Deploy from `develop` on `gcivil-nyu-org/team-3-fall26`.** A push there runs tests, then deploys. Announce laptop `eb deploy`s in the team chat so they do not overlap an Actions run.
 - **Merge first, deploy second.** Feature branches go through a PR into `develop`; don't deploy unmerged branches to `nycfood-env`.
-- **Run the tests before deploying.**
 - **Changing an API key** doesn't need a deploy: update it in SSM Parameter Store, then run `eb restart`.
+- **Changing the canonical databases** is an `aws s3 cp`, then a deploy so the instance downloads the new objects.
 
 ## Rolling back
 
@@ -98,14 +94,8 @@ Every deploy is kept as an application version in S3. To go back to an earlier o
 eb appversion          # lists versions; pick one and deploy it from the menu
 ```
 
-Or: EB console → `nycfood` → Application versions → select a version → Deploy. Rolling back code also rolls back the bundled database to that version's copy.
+Or: EB console → `nycfood` → Application versions → select a version → Deploy. Rolling back code does not change the S3 database objects. The instance downloads those objects again during the rollback deploy.
 
-## Optional: automatic deploys with GitHub Actions
+## GitHub Actions
 
-A workflow could deploy on every push to `develop`:
-
-1. Check out the code.
-2. Install requirements and run `manage.py test`.
-3. Run `eb deploy nycfood-env` using AWS credentials stored as GitHub repository secrets.
-
-The site would then always match `develop`. The blocker today is `nyc_food.db`: GitHub doesn't have it, so the workflow would have to rebuild it with `import_datasets` on every run (slow, and it would wipe live accounts anyway). Moving the database to RDS solves both problems and makes automatic deploys straightforward.
+`.github/workflows/ci.yml` deploys only when all of these are true: the `test` job succeeded, the event is a push, the branch is `develop`, and the repository is `gcivil-nyu-org/team-3-fall26`. The job assumes `arn:aws:iam::322134621417:role/github-nycfood-deploy` through GitHub's OIDC provider and runs `eb deploy nycfood-env`. No AWS access keys are stored in the repository.
