@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -58,6 +59,7 @@ INSTALLED_APPS = [
     "restaurants",
     "accounts",
     "community",
+    "assistant",
 ]
 
 MIDDLEWARE = [
@@ -79,6 +81,7 @@ TEMPLATES = [
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
+                "assistant.context_processors.assistant",
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
@@ -94,17 +97,24 @@ WSGI_APPLICATION = "nycfood.wsgi.application"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
+    # Open Data tables rebuilt by `manage.py import_datasets`.
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "database" / "nyc_food.db",
     },
+    # Google restaurants and enrichment, ratings, comments, photos, scores.
     "community": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "database" / "community.db",
     },
+    # Accounts, profiles, mood logs and sessions (see nycfood/routers.py).
+    "users": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "database" / "users.db",
+    },
 }
 
-DATABASE_ROUTERS = ["community.router.CommunityRouter"]
+DATABASE_ROUTERS = ["nycfood.routers.UsersRouter", "community.router.CommunityRouter"]
 
 
 # Password validation
@@ -154,14 +164,44 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "handlers": {"console": {"class": "logging.StreamHandler"}},
-    "loggers": {"django.request": {"handlers": ["console"], "level": "ERROR"}},
+    "loggers": {
+        "django.request": {"handlers": ["console"], "level": "ERROR"},
+        "search.summary_status": {"handlers": ["console"], "level": "WARNING"},
+    },
 }
 
 # Google Places API (New)
 # Set the GOOGLE_PLACES_API_KEY environment variable to enable enrichment.
 GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
+# Fetch and store a restaurant's Google data the first time its detail page is
+# opened (needs the key above). Always off under `manage.py test`.
+GOOGLE_AUTO_FETCH = sys.argv[1:2] != ["test"]
+# Top picks fetch (and store) a missing restaurant photo reference from Google
+# (search/services/places.py ensure_photos). Always off under `manage.py test`.
+GOOGLE_PHOTO_FETCH = sys.argv[1:2] != ["test"]
 
 # Auth redirects for the profile tab.
+# The AI assistant stays hidden until ANTHROPIC_API_KEY is set.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Gemini writes a restaurant's "why we recommend it" paragraph on its first
+# detail-page visit (search/reason_writer.py); without a key the page shows the
+# plain reason list. Always off under `manage.py test` so tests never call it.
+RUNNING_TESTS = sys.argv[1:2] == ["test"]
+GEMINI_API_KEY = "" if RUNNING_TESTS else os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+# Score a restaurant's reviews with the MiniLM model (search/ai_scores.py) the
+# first time it is shown, and store the result. Off in tests.
+AI_LIVE_SCORING = not RUNNING_TESTS
+
+# Home page Google lookups (Top picks + Explore more cards) are remembered this
+# long, so a reload does not search Google again. Off in tests.
+PLACES_CACHE_SECONDS = 0 if RUNNING_TESTS else 60 * 60
+
+ASSISTANT_MODEL = os.environ.get("ASSISTANT_MODEL", "claude-haiku-5-5")
+ASSISTANT_DAILY_MESSAGES = int(os.environ.get("ASSISTANT_DAILY_MESSAGES", "50"))
+
 LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "accounts:profile"
 LOGOUT_REDIRECT_URL = "search:index"
@@ -180,5 +220,5 @@ EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True") == "True"
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.environ.get(
-    "DEFAULT_FROM_EMAIL", "no-reply@nycfoodsearch.local"
+    "DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@nycfoodsearch.local"
 )

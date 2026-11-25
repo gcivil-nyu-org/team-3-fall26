@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}Your profile - NYC Food Search{% endblock %}
 
@@ -8,90 +9,182 @@
 
 <section class="form-section">
   <h2>Account details</h2>
-  <dl>
-    <dt>Username</dt>
-    <dd>{{ request.user.username }}</dd>
-    <dt>Name</dt>
-    <dd>{{ fixed_form.instance.name|default:"Not provided yet" }}</dd>
-    <dt>Email</dt>
-    <dd>{{ request.user.email|default:"Not provided yet" }}</dd>
-  </dl>
+  <div class="account-card">
+    <div class="account-photo">
+      {% if profile.picture %}
+        <img class="account-photo__img" src="{{ profile.picture.url }}" alt="Your profile picture" width="96" height="96">
+      {% else %}
+        <span class="account-photo__img account-photo__initial" aria-hidden="true">{{ request.user.username|first|upper }}</span>
+      {% endif %}
+      {# Belongs to the profile form below (form="profile-form"); picking a file saves it. #}
+      <label class="account-photo__change" for="id_picture">{% if profile.picture %}Change photo{% else %}Add photo{% endif %}</label>
+      <input type="file" name="picture" id="id_picture" accept="image/*" form="profile-form" class="sr-only">
+      {% for error in fixed_form.picture.errors %}
+        <p class="field-errors">{{ error }}</p>
+      {% endfor %}
+    </div>
+    <div class="account-info">
+      {% with display_name=fixed_form.instance.name|default:request.user.get_full_name %}
+        <p class="account-info__name">
+          {% if display_name %}{{ display_name }}{% else %}{{ request.user.username }} <span class="account-info__note">· name not set</span>{% endif %}
+        </p>
+      {% endwith %}
+      <p class="account-info__username">@{{ request.user.username }}</p>
+      <p class="account-info__line">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+        <span class="sr-only">Email: </span>{{ request.user.email|default:"No email yet" }}
+      </p>
+      <a class="account-info__link" href="{% url 'accounts:view_profile' user.username %}">View public profile →</a>
+    </div>
+  </div>
 </section>
 
 <section class="form-section">
-  <h2>Fixed user inputs</h2>
-  <p class="muted">Basics about you. Update these whenever something changes.</p>
-  {% if profile.picture %}
-    <img class="profile-picture" src="{{ profile.picture.url }}" alt="Your profile picture" width="120">
-  {% endif %}
-  <p><a href="{% url 'accounts:view_profile' user.username %}">View public profile</a></p>
-  <form method="post" action="{% url 'accounts:profile' %}" enctype="multipart/form-data">
+  <form method="post" action="{% url 'accounts:profile' %}" enctype="multipart/form-data" id="profile-form">
     {% csrf_token %}
     {% if fixed_form.non_field_errors %}
       <ul class="errorlist">{{ fixed_form.non_field_errors }}</ul>
     {% endif %}
-    {% if fixed_form.instance.picture %}
-      <p>
-        <img src="{{ fixed_form.instance.picture.url }}"
-             alt="Profile picture for {{ fixed_form.instance.name|default:request.user.username }}"
-             width="120" height="120">
-      </p>
-    {% endif %}
+    <div class="section-head">
+      <h2>Personal details</h2>
+    </div>
     <div class="field-grid">
       {% for field in fixed_form %}
+        {% if field.name not in food_fields and field.name != "picture" %}
         <div class="field{% if field.name in wide_fields %} field--wide{% endif %}">
           <label for="{{ field.id_for_label }}">{{ field.label }}</label>
           {{ field }}
+          {% if field.help_text %}<p class="muted field-help">{{ field.help_text }}</p>{% endif %}
           {% for error in field.errors %}
             <p class="field-errors">{{ error }}</p>
           {% endfor %}
         </div>
+        {% endif %}
       {% endfor %}
     </div>
-    <button type="submit" class="btn" name="action" value="save_fixed">Save fixed inputs</button>
+    <div class="section-head section-head--next">
+      <h2>Food preferences</h2>
+      <p class="muted">Shapes your Top picks</p>
+    </div>
+    <div class="field-grid">
+      {% for field in fixed_form %}
+        {% if field.name in food_fields %}
+        <div class="field{% if field.name in wide_fields %} field--wide{% endif %}">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<p class="muted field-help">{{ field.help_text }}</p>{% endif %}
+          {% for error in field.errors %}
+            <p class="field-errors">{{ error }}</p>
+          {% endfor %}
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn" name="action" value="save_fixed">Save profile</button>
   </form>
 </section>
 
-<section class="form-section">
-  <h2>Variable user inputs</h2>
-  <p class="muted">A quick daily check-in. Every save is added to your history.</p>
-  <form method="post" action="{% url 'accounts:profile' %}">
+<section class="form-section" id="checkin-log">{# step175 #}
+  <div class="section-head">
+    <h2>Check-in log</h2>
+    <p class="muted">Tap Edit to change a check-in.</p>
+  </div>
+  {% if mood_history %}
+    <ul class="checkin-history">
+      {% for log in mood_history %}
+        <li data-id="{{ log.pk }}" data-mood="{{ log.mood|default_if_none:'' }}" data-energy="{{ log.energy_level|default_if_none:'' }}">
+          <span class="checkin-history__when muted">{{ log.created_at|date:"N j, P" }}</span>
+          <span class="checkin-history__item">{{ log.mood_icon }}{{ log.mood_display_label }}</span>
+          <span class="checkin-history__item">{{ log.energy_icon }}{{ log.energy_display_label }}</span>
+          {% if log.is_today %}<button type="button" class="checkin-edit-btn">Edit</button>{% else %}<form method="post" action="{% url 'accounts:profile' %}" class="checkin-del" onsubmit="return confirm('Delete this check-in?');">{% csrf_token %}<input type="hidden" name="action" value="delete_mood"><input type="hidden" name="log_id" value="{{ log.pk }}"><button type="submit" class="checkin-del-btn">Delete</button></form>{% endif %}{# step224 #}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No check-ins yet.</p>
+  {% endif %}
+  {# step176 #}
+  <form method="post" action="{% url 'accounts:profile' %}" class="checkin-form checkin-edit" id="checkin-edit" hidden>
     {% csrf_token %}
+    <input type="hidden" name="log_id" value="">
     {% if mood_form.non_field_errors %}
       <ul class="errorlist">{{ mood_form.non_field_errors }}</ul>
     {% endif %}
-    <div class="field-grid">
-      {% for field in mood_form %}
-        <div class="field field--wide">
-          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-          {{ field }}
-          {% for error in field.errors %}
-            <p class="field-errors">{{ error }}</p>
-          {% endfor %}
-        </div>
-      {% endfor %}
-    </div>
-    <button type="submit" class="btn" name="action" value="log_mood">Save check-in</button>
-  </form>
-
-  <h2>Recent check-ins</h2>
-  {% if mood_history %}
-    <table>
-      <thead>
-        <tr><th>When</th><th>Mood</th><th>Energy level</th></tr>
-      </thead>
-      <tbody>
-        {% for log in mood_history %}
-          <tr>
-            <td>{{ log.created_at|date:"N j, Y, P" }}</td>
-            <td>{{ log.mood_display_label }}</td>
-            <td>{{ log.energy_display_label }}</td>
-          </tr>
+    {% for field in mood_form %}
+      <div class="checkin-field">
+        <p class="checkin-field__label" id="{{ field.id_for_label }}_label">{{ field.label }}</p>
+        {{ field }}
+        {% for error in field.errors %}
+          <p class="field-errors">{{ error }}</p>
         {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="empty">No check-ins yet. Log your first one above.</p>
-  {% endif %}
+      </div>
+    {% endfor %}
+    <div class="checkin-edit__actions">
+      <button type="submit" class="btn" name="action" value="edit_mood">Save</button>
+      <button type="button" class="btn btn-secondary checkin-edit__cancel">Cancel</button>
+    </div>
+  </form>
 </section>
+<script>
+  // step175: open the edit form under the tapped entry, prefilled.
+  (function () {
+    var form = document.getElementById("checkin-edit");
+    if (!form) return;
+    // step177: names show on hover.
+    form.querySelectorAll(".checkin-option").forEach(function (o) {
+      var s = o.querySelector("span"); if (s) o.title = s.textContent.trim();
+    });
+    function pick(name, val) {
+      form.querySelectorAll('input[name="' + name + '"]').forEach(function (r) { r.checked = (r.value === String(val)); });
+    }
+    document.querySelectorAll(".checkin-edit-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var li = b.closest("li");
+        if (!form.hidden && form.previousElementSibling === li) { form.hidden = true; return; }
+        form.querySelector('[name="log_id"]').value = li.dataset.id;
+        pick("mood", li.dataset.mood); pick("energy_level", li.dataset.energy);
+        li.after(form); form.hidden = false;
+      });
+    });
+    form.querySelector(".checkin-edit__cancel").addEventListener("click", function () { form.hidden = true; });
+    {% if edit_log_id %}
+    var li = document.querySelector('.checkin-history li[data-id="{{ edit_log_id }}"]');
+    if (li) { form.querySelector('[name="log_id"]').value = li.dataset.id; li.after(form); form.hidden = false; }
+    {% endif %}
+  })();
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{% static 'search/food_picker.js' %}?v=1"></script>
+<script>
+  // Choosing a profile photo (Account details) saves the profile form at once.
+  (function () {
+    var photo = document.getElementById("id_picture");
+    var form = document.getElementById("profile-form");
+    if (!photo || !form) return;
+    photo.addEventListener("change", function () {
+      if (!photo.files.length) return;
+      var save = form.querySelector('[name="action"][value="save_fixed"]');
+      if (form.requestSubmit) form.requestSubmit(save); else save.click();
+    });
+  })();
+</script>
+<script>
+  // BMI is worked out from weight (lbs) and height (in) as they are typed;
+  // the field itself can't be edited. Same formula as search/recommend.bmi.
+  (function () {
+    var weight = document.getElementById("id_weight_lbs");
+    var height = document.getElementById("id_height_in");
+    var out = document.getElementById("id_bmi");
+    if (!weight || !height || !out) return;
+    function update() {
+      var w = parseFloat(weight.value);
+      var h = parseFloat(height.value);
+      out.value = w > 0 && h > 0 ? (703 * w / (h * h)).toFixed(1) : "";
+    }
+    weight.addEventListener("input", update);
+    height.addEventListener("input", update);
+  })();
+</script>
 {% endblock %}

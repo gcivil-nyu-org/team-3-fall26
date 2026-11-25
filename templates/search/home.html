@@ -1,27 +1,57 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block title %}Restaurants - NYC Food Search{% endblock %}
+{% block title %}Top picks - NYC Food Search{% endblock %}
 {% block main_class %}restaurant-main{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'search/homepage.css' %}?v=11">
+<link rel="stylesheet" href="{% static 'search/homepage.css' %}?v=69">
+<script src="{% static 'search/explore_like.js' %}?v=4" defer></script>
+<script src="{% static 'search/mood_checkin.js' %}?v=5" defer></script>
+<script>window.TOP_PICKS_RERANK_URL = "{% url 'search:rerank_top_picks' %}";</script>
 {% endblock %}
 
 {% block content %}
+<header class="ui-hero home-hero">
+  <h1 id="home-hero-title">{{ hero_title }}</h1>
+  <p class="ui-lede" id="home-hero-lede">{% if user.is_authenticated %}{{ hero_lede }}{% else %}Sign up and find great places picked just for you.{% endif %}</p>
+</header>
 <section class="restaurant-home" aria-labelledby="restaurant-home-title">
-  <div class="restaurant-home__intro">
-    {% if selected_boro %}
+  
 
-    {% else %}
-    <div class="restaurant-home__intro-copy">
-      <p class="restaurant-home__eyebrow">A taste of the city</p>
-      <h1 id="restaurant-home-title">Restaurants</h1>
-      <p class="muted">NYC restaurants near you.</p>
+  {% if top_picks %}
+  <section class="top-picks" aria-labelledby="top-picks-title">
+    {# Location minimap UI disabled for now; pin APIs / scoring remain. #}
+    <div id="cook-at-home-slot">{% include "search/_cook_at_home.html" %}</div>
+    <div class="top-picks__header">
+      <p class="top-picks__date"><span class="top-picks__dot" aria-hidden="true"></span>{{ picks_date|date:"l, M j" }} · refreshed daily</p>
+      <div class="top-picks__title-row">
+      <form class="top-picks__title-form" method="get">
+        <h2 id="top-picks-title">{% if personalized_picks %}Picked for you{% else %}Today's Top Picks{% endif %} in
+          <label class="sr-only" for="restaurant-boro">Select your location</label><select id="restaurant-boro" name="boro" class="top-picks__boro" onchange="this.form.submit()">
+            <option value="">New York</option>
+            {% for boro in borough_options %}
+              <option value="{{ boro }}" {% if selected_boro == boro %}selected{% endif %}>{{ boro|title }}</option>
+            {% endfor %}
+          </select></h2>
+        <noscript><button type="submit" class="btn">Apply</button></noscript>
+      </form>
+      {% if show_checkin %}
+      <div class="mood-pick" aria-label="Today's check-in">
+        {% include "search/_checkin_menu.html" with kind="mood" caption="Mood" now=mood_now options=mood_options %}
+        {% include "search/_checkin_menu.html" with kind="energy" caption="Energy" now=energy_now options=energy_options %}
+      </div>
+      {% endif %}
+      </div>
+      <p class="top-picks__subtitle muted">{% if user.is_authenticated %}{{ top_picks_subtitle }}{% else %}<span class="tp-nudge">Picks for everyone today. <a href="{% url 'accounts:login' %}">Log in</a> or <a href="{% url 'accounts:signup' %}">sign up</a> to make them yours.{# step209 #}</span>{% endif %}</p>
     </div>
-    {% endif %}
+    <div class="top-picks__grid">
+      {% include "search/_top_picks_grid.html" %}
+    </div>
+  </section>
+  {% endif %}
 
-    <form class="restaurant-borough-filter" method="get">
+  {% if not top_picks %}<div class="home-location"><form class="restaurant-borough-filter" method="get">
       <label for="restaurant-boro">Select your location</label>
       <select id="restaurant-boro" name="boro" onchange="this.form.submit()">
         <option value="">All boroughs</option>
@@ -30,129 +60,15 @@
         {% endfor %}
       </select>
       <noscript><button type="submit">Apply</button></noscript>
-    </form>
-  </div>
-
-  {% if top_picks %}
-  <section class="top-picks" aria-labelledby="top-picks-title">
-    <div class="top-picks__header">
-      <h2 id="top-picks-title"><span class="top-picks__icon" aria-hidden="true">🏆</span> Today's Top Picks</h2>
-      <p class="top-picks__subtitle muted">Your next unforgettable food experience starts here!</p>
-    </div>
-    <div class="top-picks__grid">
-      {% for pick in top_picks %}
-        <article class="top-pick-card">
-          <div class="top-pick-card__art">
-            {% static 'search/images/nyc-restaurant.jpg' as fallback_img %}
-            <img
-              src="{% if pick.photo_url %}{{ pick.photo_url }}{% elif pick.image %}{% static pick.image %}{% else %}{{ fallback_img }}{% endif %}"
-              alt="{{ pick.name }}"
-              loading="lazy"
-              onerror="this.onerror=null;this.src='{{ fallback_img|escapejs }}';">
-            <span class="top-pick-card__rank">#{{ forloop.counter }}</span>
-            {% if pick.inspection.grade %}
-              <span class="top-pick-card__grade grade grade-{{ pick.inspection.grade }}" title="NYC DOHMH Grade {{ pick.inspection.grade }}">
-                Grade {{ pick.inspection.grade }}
-              </span>
-            {% endif %}
-            {% if pick.google.price %}
-              <span class="top-pick-card__price" title="Price level: {{ pick.google.price }}">{{ pick.google.price }}</span>
-            {% endif %}
-          </div>
-          <div class="top-pick-card__body">
-            <div class="top-pick-card__tags">
-              <span class="top-pick-card__category">{{ pick.cuisine|default:"Restaurant" }}</span>
-              {% if pick.boro %}<span class="top-pick-card__boro-tag">{{ pick.boro }}</span>{% endif %}
-            </div>
-            <h3>
-              {% if pick.inspection.camis %}
-                <a href="{% url 'search:restaurant_detail' pick.inspection.camis %}">{{ pick.name }}</a>
-              {% else %}
-                {{ pick.name }}
-              {% endif %}
-            </h3>
-            <p class="top-pick-card__address">
-              {% if pick.google.address %}{{ pick.google.address }}{% else %}{{ pick.street }}{% if pick.boro %}, {{ pick.boro }}{% endif %}{% if pick.zipcode %} {{ pick.zipcode }}{% endif %}{% endif %}
-            </p>
-
-            <!-- Google Star Rating in Card Details -->
-            {% if pick.google.rating %}
-              <div class="top-pick-card__rating-bar" title="Google rating: {{ pick.google.rating }} / 5">
-                <span class="top-pick-card__stars-visual" aria-hidden="true">
-                  <span class="top-pick-card__star top-pick-card__star--filled"></span>
-                  <span class="top-pick-card__star {% if pick.google.rating >= 1.8 %}top-pick-card__star--filled{% elif pick.google.rating >= 1.3 %}top-pick-card__star--half{% endif %}"></span>
-                  <span class="top-pick-card__star {% if pick.google.rating >= 2.8 %}top-pick-card__star--filled{% elif pick.google.rating >= 2.3 %}top-pick-card__star--half{% endif %}"></span>
-                  <span class="top-pick-card__star {% if pick.google.rating >= 3.8 %}top-pick-card__star--filled{% elif pick.google.rating >= 3.3 %}top-pick-card__star--half{% endif %}"></span>
-                  <span class="top-pick-card__star {% if pick.google.rating >= 4.8 %}top-pick-card__star--filled{% elif pick.google.rating >= 4.3 %}top-pick-card__star--half{% endif %}"></span>
-                </span>
-                <span class="top-pick-card__rating-value">{{ pick.google.rating }}</span>
-                {% if pick.google.rating_count %}
-                  <span class="top-pick-card__rating-count muted">({{ pick.google.rating_count }})</span>
-                {% endif %}
-                <span class="top-pick-card__rating-source">Google</span>
-              </div>
-            {% endif %}
-
-            <!-- Google Review Comment -->
-            {% if pick.review and pick.review.text %}
-              <div class="top-pick-card__review">
-                <div class="top-pick-card__review-header">
-                  <span class="top-pick-card__review-label">Google Review</span>
-                  {% if pick.review.rating %}
-                    <span class="top-pick-card__review-rating" title="Rated {{ pick.review.rating }} stars">
-                      ★ {{ pick.review.rating }}
-                    </span>
-                  {% endif %}
-                </div>
-                <blockquote class="top-pick-card__review-quote">
-                  “{{ pick.review.text|truncatechars:150 }}”
-                </blockquote>
-                {% if pick.review.author_name %}
-                  <div class="top-pick-card__review-author">
-                    <span class="author-name">— {{ pick.review.author_name }}</span>
-                    {% if pick.review.relative_time %}
-                      <span class="review-time muted">({{ pick.review.relative_time }})</span>
-                    {% endif %}
-                  </div>
-                {% endif %}
-              </div>
-            {% endif %}
-
-            <div class="top-pick-card__meta">
-              {% if pick.inspection.grade %}
-                <span class="top-pick-card__meta-item" title="Health Grade">
-                  <span class="top-pick-card__meta-dot grade-dot-{{ pick.inspection.grade }}"></span>
-                  Grade {{ pick.inspection.grade }}
-                </span>
-              {% endif %}
-              {% if pick.inspection.date %}
-                <span class="top-pick-card__meta-item muted" title="Last inspected">
-                  Inspected {{ pick.inspection.date }}
-                </span>
-              {% endif %}
-            </div>
-          </div>
-        </article>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
+    </form></div>{% endif %}
 
   {% if restaurants %}
   <section class="restaurant-list-section {% if top_picks %}restaurant-list-section--with-divider{% endif %}" aria-labelledby="restaurant-list-title">
     <div class="restaurant-list-header">
-      <div class="restaurant-list-header__copy">
-        <p class="restaurant-list-header__eyebrow">Explore more</p>
-        <h2 id="restaurant-list-title">
-          {% if selected_boro %}
-            Restaurants in {{ selected_boro|title }}
-          {% else %}
-            Good food is closer than you think. Let's find it!
-          {% endif %}
-        </h2>
-        <p class="muted">
-          Showing {{ page_obj.paginator.count }} verified NYC restaurant record{{ page_obj.paginator.count|pluralize }}
-        </p>
+      <div class="restaurant-list-header__copy xm-head">
+        <p class="xm-kicker">More to try</p>
+        <h2 id="restaurant-list-title" class="xm-title">Explore more</h2>
+        <p class="xm-sub">Fresh places across <span class="xm-place">{% if selected_boro %}{{ selected_boro|title }}{% else %}New York{% endif %}</span>, every day.</p>
       </div>
 
       <nav class="restaurant-pagination" aria-label="Restaurant pages">
@@ -164,7 +80,7 @@
 
     <div class="restaurant-grid">
       {% for restaurant in restaurants %}
-        <article class="restaurant-card">
+        <article class="restaurant-card" id="r-{{ restaurant.place_id }}">
           <div class="restaurant-card__art">
             {% static 'search/images/nyc-restaurant.jpg' as fallback_img %}
           <img
@@ -172,13 +88,28 @@
             alt="{{ restaurant.name }}"
             loading="lazy"
             onerror="this.onerror=null;this.src='{{ fallback_img|escapejs }}';">
-            {% if restaurant.google.price %}<span class="restaurant-card__price">{{ restaurant.google.price }}</span>{% endif %}
+            {% if restaurant.health is not None %}<span class="hp-tag hp-tag--{% if restaurant.health >= 70 %}hi{% elif restaurant.health >= 40 %}mid{% else %}lo{% endif %}" title="AI health score from reviews (MiniLM), 0-100"><span class="hs-ring" style="--p:{{ restaurant.health }}"><span>{{ restaurant.health }}</span></span><span class="hs-word">Health+</span></span>{% endif %}
           </div>
           <div class="restaurant-card__body">
-            <p class="restaurant-card__category">{{ restaurant.cuisine|default:"Restaurant" }}</p>
+            <div class="restaurant-card__topline">
+              <p class="restaurant-card__category">{{ restaurant.cuisine|default:"Restaurant" }}</p>
+              {% if user.is_authenticated and restaurant.place_id %}
+                <form class="restaurant-card__like" method="post"
+                      action="{% url 'search:pick_feedback' restaurant.place_id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="value" value="like">
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}#r-{{ restaurant.place_id }}">
+                  <button type="submit"
+                          class="restaurant-card__like-btn{% if restaurant.liked %} is-active{% endif %}"
+                          aria-pressed="{% if restaurant.liked %}true{% else %}false{% endif %}"
+                          aria-label="{% if restaurant.liked %}Liked{% else %}Like{% endif %}"
+                          title="{% if restaurant.liked %}Liked. Press again to undo{% else %}More like this in your Top picks{% endif %}"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.8 4.5c2.1 0 3.6 1.1 4.4 2.5h1.6c.8-1.4 2.3-2.5 4.4-2.5 3.8 0 5.9 3.9 4.4 7.3C19.5 16.4 12 21 12 21z"/></svg></button>
+                </form>
+              {% endif %}
+            </div>
             <h2>
-              {% if restaurant.camis %}
-                <a href="{% url 'search:restaurant_detail' restaurant.camis %}">{{ restaurant.name }}</a>
+              {% if restaurant.place_id %}
+                <a href="{% url 'search:restaurant_detail' restaurant.place_id %}?from=home{% if selected_boro %}&amp;boro={{ selected_boro|urlencode }}{% endif %}{% if page_obj.number > 1 %}&amp;page={{ page_obj.number }}{% endif %}">{{ restaurant.name }}</a>
               {% else %}
                 {{ restaurant.name }}
               {% endif %}
@@ -186,6 +117,7 @@
             <p class="restaurant-card__description">
               {% if restaurant.google.address %}{{ restaurant.google.address }}{% else %}{{ restaurant.street }}{% if restaurant.boro %}, {{ restaurant.boro }}{% endif %}{% if restaurant.zipcode %} {{ restaurant.zipcode }}{% endif %}{% endif %}
             </p>
+            {% if restaurant.google.rating or restaurant.google.price %}<p class="restaurant-card__meta">{% if restaurant.google.rating %}<span class="rc-star">★</span> {{ restaurant.google.rating }}{% if restaurant.google.rating_count %} <span class="rc-mu">({{ restaurant.google.rating_count }})</span>{% endif %}{% endif %}{% if restaurant.google.price %} <span class="rc-mu">·</span> {{ restaurant.google.price }}{% endif %}</p>{% endif %}
           </div>
         </article>
       {% endfor %}
@@ -196,4 +128,309 @@
     <p class="restaurant-home__empty">No restaurant records are available. Import the CSV dataset to populate this page.</p>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}{{ block.super }}
+{% if user.is_authenticated %}{# step169 #}
+<script>
+  // 156: one pill - mood and energy words inside the buttons.
+  (function () {
+    document.querySelectorAll(".mood-pick__btn").forEach(function (btn) {
+      if (btn.querySelector(".mood-pick__word")) return;
+      var menu = btn.parentNode.querySelector(".mood-pick__menu");
+      var on = menu && menu.querySelector(".mood-pick__opt.is-on span");
+      var word = document.createElement("span");
+      word.className = "mood-pick__word";
+      word.textContent = on ? on.textContent.trim() : (btn.dataset.kind === "energy" ? "Energy" : "Mood");
+      btn.insertBefore(word, btn.querySelector(".mood-pick__chev"));
+    });
+  })();
+</script>
+{% endif %}
+<script>
+  // 136/139: photo size = earlier + 80px; text at the bottom of the photo.
+  (function () {
+    var hero = document.querySelector(".home-hero");
+    if (!hero) return;
+    var st = getComputedStyle(hero);
+    var pt = parseFloat(st.paddingTop) || 0, pb = parseFloat(st.paddingBottom) || 0;
+    hero.style.setProperty("padding-top", (pt + 40) + "px", "important");
+    hero.style.setProperty("padding-bottom", (pb + 40) + "px", "important");
+    var full = hero.offsetHeight;
+    hero.style.setProperty("min-height", full + "px", "important");
+    hero.style.setProperty("padding-bottom", Math.max(28, pb) + "px", "important");
+    hero.classList.add("hero-text-bottom");
+    // 140 (kept): 50px taller below.
+    hero.style.setProperty("min-height", (hero.offsetHeight + 50) + "px", "important");
+  })();
+</script>
+<script>
+  // 123: header on hero (home only).
+  (function () {
+    var hero = document.querySelector(".home-hero"), header = document.querySelector(".site-header");
+    if (!hero || !header) return;
+    hero.prepend(header);
+    header.classList.add("on-hero");
+    hero.classList.add("has-nav");
+    document.body.classList.add("nav-on-hero");
+  })();
+</script>
+<script>
+  // 91: cook card sits on the hero photo.
+  (function () {
+    var hero = document.querySelector(".home-hero"), slot = document.getElementById("cook-at-home-slot");
+    if (hero && slot) hero.appendChild(slot);
+  })();
+</script>
+<script>
+  // 64: same title look for Explore more as Top picks.
+  (function () {
+    var a = document.getElementById("top-picks-title"), b = document.getElementById("restaurant-list-title");
+    if (!a || !b) return;
+    var st = getComputedStyle(a);
+    ["fontSize", "fontFamily", "fontWeight", "letterSpacing", "lineHeight"].forEach(function (k) { b.style.setProperty(k.replace(/[A-Z]/g, function (m) { return "-" + m.toLowerCase(); }), st[k], "important"); });
+  })();
+</script>
+<script src="{% static 'search/boro_reel.js' %}?v=3"></script>
+
+<script>
+  // step188: region picker - same look day/night, blue-gray.
+  (function () {
+    function paint() {
+      var dark = document.documentElement.getAttribute("data-theme") === "dark";
+      var c = dark ? "#c3d3e6" : "#647f9c", line = dark ? "#6b7d92" : "#b9c4d0"; // step220
+      function set(el, props) { Object.keys(props).forEach(function (k) { el.style.setProperty(k, props[k], "important"); }); }
+      document.querySelectorAll(".boro-reel__window").forEach(function (w) {
+        set(w, { "background": "transparent", "box-shadow": "none", "border": "0", "border-radius": "0",
+                 "border-bottom": "2px dashed " + line });
+      });
+      document.querySelectorAll(".boro-reel, .boro-reel__item, .xm-place").forEach(function (el) {
+        set(el, { "color": c, "background": "transparent", "-webkit-text-fill-color": c });
+      });
+      document.querySelectorAll(".boro-reel__arrow").forEach(function (a) {
+        set(a, { "color": c, "background": "transparent", "box-shadow": "none", "border": "0" });
+        if (!a.classList.contains("boro-reel__arrow--down")) set(a, { "display": "none" });
+        a.querySelectorAll("svg, path").forEach(function (s) { set(s, { "stroke": c, "color": c }); });
+      });
+      document.querySelectorAll(".mood-pick [data-kind] svg, .mood-pick__chev").forEach(function (s) {
+        set(s, { "color": c });
+      });
+    }
+    function start() {
+      paint();
+      new MutationObserver(paint).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+    window.addEventListener("load", paint);
+  })();
+</script>
+
+
+
+
+
+{% if user.is_authenticated %}{# step204 #}
+<script>
+  // step193: 'For your [mood] mood and [energy] energy today.'
+  (function () {
+    var box = document.querySelector(".mood-pick");
+    if (!box) return;
+    var line = null;
+    document.querySelectorAll(".top-picks__subtitle, .top-picks__header p").forEach(function (p) {
+      if (!line && /mood and energy|Ranked with/i.test(p.textContent)) line = p;
+    });
+    line = line || document.querySelector(".top-picks__subtitle");
+    var dds = box.querySelectorAll(".mood-pick__dd");
+    if (!line || dds.length < 2) return;
+    var mood = dds[0], energy = dds[1];
+    dds.forEach(function (d) { var b = d.querySelector(".mood-pick__btn"); if (b && b.dataset.kind === "energy") energy = d; else if (b) mood = d; });
+    box.textContent = "";
+    box.append(mood, document.createTextNode(" mood and "), energy);
+    line.textContent = "";
+    line.classList.add("mood-sentence");
+    line.append("For your ", box, " energy today.");
+    // step194: if something rewrites the line, put the sentence back.
+    var busy = false;
+    new MutationObserver(function () {
+      if (busy) return;
+      var cur = null;
+      document.querySelectorAll(".top-picks__subtitle, .top-picks__header p").forEach(function (p) {
+        if (!cur && p !== line && /Ranked with|mood and energy check-in/i.test(p.textContent)) cur = p;
+      });
+      if (!cur && line.isConnected && line.contains(box)) return;
+      cur = cur || (line.isConnected ? line : null);
+      if (!cur) return;
+      busy = true;
+      var extra = document.querySelectorAll(".mood-pick");
+      extra.forEach(function (b) { if (b !== box) b.remove(); });
+      cur.textContent = "";
+      cur.classList.add("mood-sentence");
+      cur.append("For your ", box, " energy today.");
+      line = cur;
+      busy = false;
+    }).observe(document.querySelector(".top-picks") || document.body, { childList: true, subtree: true, characterData: true });
+  })();
+</script>
+{% endif %}
+
+
+{% if user.is_authenticated %}{# step204 #}
+<script>
+  // step197: word in the sentence = the option marked is-on (or just clicked).
+  (function () {
+    function wordOf(dd) {
+      var b = dd.querySelector(".mood-pick__btn");
+      var w = b.querySelector(".mood-pick__word");
+      if (!w) {
+        w = document.createElement("span"); w.className = "mood-pick__word";
+        b.insertBefore(w, b.querySelector(".mood-pick__chev"));
+      }
+      return w;
+    }
+    function sync(dd, opt) {
+      opt = opt || dd.querySelector(".mood-pick__opt.is-on");
+      var s = opt && opt.querySelector("span");
+      if (s) wordOf(dd).textContent = s.textContent.trim();
+    }
+    document.querySelectorAll(".mood-pick__dd").forEach(function (dd) {
+      sync(dd);
+      var menu = dd.querySelector(".mood-pick__menu");
+      if (menu) new MutationObserver(function () { sync(dd); })
+        .observe(menu, { attributes: true, attributeFilter: ["class"], subtree: true });
+    });
+    document.addEventListener("click", function (e) {
+      var opt = e.target.closest && e.target.closest(".mood-pick__opt");
+      var dd = opt && opt.closest(".mood-pick__dd");
+      if (dd) sync(dd, opt);
+    }, true);
+  })();
+</script>
+{% endif %}
+
+
+<script>
+  // step200 (+199): minimal pager; Explore pages swap in place so Top picks stay.
+  (function () {
+    var KEEP = {NYC:1,BBQ:1,LLC:1,INC:1,USA:1,NY:1,BK:1,II:1,III:1,KFC:1,BX:1,DC:1,CO:1,LP:1,LTD:1,NE:1,NW:1,SE:1,SW:1};
+    function titleCase(root) {
+      root.querySelectorAll(".restaurant-card h2, .restaurant-card__description").forEach(function (el) {
+        var w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), n;
+        while ((n = w.nextNode())) n.nodeValue = n.nodeValue
+          .replace(/[A-Z][A-Z']+/g, function (x) { return KEEP[x] ? x : x.charAt(0) + x.slice(1).toLowerCase(); })
+          .replace(/(\d)(ST|ND|RD|TH)\b/g, function (m, d, x) { return d + x.toLowerCase(); });
+      });
+    }
+    function pager(root) {
+      var nav = root.querySelector(".restaurant-pagination");
+      if (!nav || nav.classList.contains("pg-min")) return;
+      var label = Array.prototype.find.call(nav.querySelectorAll("span"), function (s) { return /Page\s+\d+\s+of\s+\d+/i.test(s.textContent); });
+      if (!label) return;
+      var m = label.textContent.match(/Page\s+(\d+)\s+of\s+(\d+)/i), cur = +m[1], tot = +m[2];
+      var prev = null, next = null;
+      nav.querySelectorAll("a").forEach(function (a) {
+        if (label.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_PRECEDING) prev = a; else next = next || a;
+      });
+      function arrow(a, ch, name) {
+        var el = a || document.createElement("span");
+        el.textContent = ch; el.className = "pg-arrow" + (a ? "" : " is-off");
+        el.setAttribute("aria-label", name);
+        return el;
+      }
+      var p = arrow(prev, "‹", "Previous page"), n = arrow(next, "›", "Next page");
+      label.className = "pg-count";
+      label.innerHTML = "<b>" + (cur < 10 ? "0" + cur : cur) + "</b> — " + tot;
+      nav.textContent = "";
+      nav.classList.add("pg-min");
+      nav.append(p, label, n);
+    }
+    function load(url, push) {
+      var sec = document.querySelector(".restaurant-list-section");
+      if (!sec) { location.href = url; return; }
+      sec.style.opacity = ".5";
+      fetch(url, { credentials: "same-origin" }).then(function (r) { return r.text(); }).then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var fresh = doc.querySelector(".restaurant-list-section");
+        if (!fresh) { location.href = url; return; }
+        var oldTitle = sec.querySelector("#restaurant-list-title"), newTitle = fresh.querySelector("#restaurant-list-title");
+        if (oldTitle && newTitle) newTitle.setAttribute("style", oldTitle.getAttribute("style") || "");
+        sec.replaceWith(fresh);
+        titleCase(fresh); pager(fresh);
+        if (push) history.pushState({ explore: url }, "", url);
+        var top = fresh.getBoundingClientRect().top + window.scrollY - 80;
+        if (window.scrollY > top) window.scrollTo({ top: top, behavior: "smooth" });
+      }).catch(function () { location.href = url; });
+    }
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest(".restaurant-pagination a");
+      if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      e.preventDefault();
+      load(a.href, true);
+    });
+    window.addEventListener("popstate", function () { load(location.href, false); });
+    pager(document);
+  })();
+</script>
+
+<script>
+  // step207: Top picks name -> Search, focused on that place.
+  (function () {
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest(".top-pick-card h3 a[href*='/restaurant/'], .restaurant-card h2 a[href*='/restaurant/']" /* step208 */);
+      if (!a || e.metaKey || e.ctrlKey) return;
+      var m = a.getAttribute("href").match(/\/restaurant\/([^/?]+)/);
+      if (!m) return;
+      e.preventDefault();
+      var name = a.textContent.trim();
+      location.href = "/search/?q=" + encodeURIComponent(name) + "&focus=" + encodeURIComponent("camis:" + decodeURIComponent(m[1]));
+    }, true);
+  })();
+</script>
+
+{% if user.is_authenticated %}
+<script>
+  // step220: "Pick your mood and energy for today." / "For your Good mood and Alert energy today."
+  (function () {
+    var busy = false;
+    function render() {
+      var line = document.querySelector(".mood-sentence"), box = document.querySelector(".mood-pick");
+      if (!line || !box || busy) return;
+      var dds = box.querySelectorAll(".mood-pick__dd");
+      if (dds.length < 2) return;
+      var mood = dds[0], energy = dds[1];
+      dds.forEach(function (d) { var b = d.querySelector("[data-kind]"); if (b && b.dataset.kind === "energy") energy = d; else if (b) mood = d; });
+      function setOf(d) { return !!d.querySelector(".mood-pick__opt.is-on"); }
+      function word(d, fallback) {
+        var w = d.querySelector(".mood-pick__word");
+        if (w && !setOf(d)) w.textContent = fallback;
+        return w ? w.textContent : "";
+      }
+      var mSet = setOf(mood), eSet = setOf(energy);
+      var sig = [mSet, eSet, word(mood, "mood"), word(energy, "energy")].join("|");
+      var any = mSet || eSet; // step226: check the actual words around the box
+      var pre = any ? "For your " : "Pick your ", suf = any ? " today." : " for today.";
+      var ok = line.dataset.sig === sig && box.parentNode === line && line.childNodes.length === 3 &&
+        line.firstChild.nodeValue === pre && line.lastChild.nodeValue === suf;
+      if (ok) return;
+      busy = true;
+      box.textContent = "";
+      box.append(mood);
+      if (mSet) box.append(" mood");
+      box.append(" and ", energy);
+      if (eSet) box.append(" energy");
+      line.textContent = "";
+      line.append(pre, box, suf);
+      line.dataset.sig = sig;
+      busy = false;
+    }
+    function soon() { requestAnimationFrame(render); }
+    function start() {
+      render();
+      var root = document.querySelector(".top-picks") || document.body;
+      new MutationObserver(soon).observe(root, { childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ["class"] });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+  })();
+</script>
+{% endif %}
 {% endblock %}

@@ -12,9 +12,55 @@ class ProfileLoginView(LoginView):
     redirect_authenticated_user = True
     authentication_form = LoginForm
 
+    # step203: no ?next= -> go back to the page the user came from.
+    def get(self, request, *args, **kwargs):
+        from django.utils.http import url_has_allowed_host_and_scheme
+        from urllib.parse import urlparse
+
+        ref = request.META.get("HTTP_REFERER", "")
+        if ref and url_has_allowed_host_and_scheme(
+            ref, allowed_hosts={request.get_host()}
+        ):
+            p = urlparse(ref)
+            path = p.path + ("?" + p.query if p.query else "")
+            if not p.path.startswith(("/login", "/signup", "/logout")):
+                request.session["login_back"] = path
+        return super().get(request, *args, **kwargs)
+
+    def get_default_redirect_url(self):
+        back = self.request.session.pop("login_back", "")
+        return back or super().get_default_redirect_url()
+
 
 urlpatterns = [
+    path("admin-dashboard/", views.admin_dashboard, name="admin_dashboard"),
+    path(
+        "admin-dashboard/users/<int:user_id>/",
+        views.admin_user_detail,
+        name="admin_user_detail",
+    ),
+    path(
+        "admin-dashboard/users/<int:user_id>/delete/",
+        views.admin_delete_user,
+        name="admin_delete_user",
+    ),
+    path(
+        "admin-dashboard/comments/<int:comment_id>/delete/",
+        views.admin_delete_comment,
+        name="admin_delete_comment",
+    ),
     path("profile/", views.profile, name="profile"),
+    path("checkin/", views.quick_checkin, name="quick_checkin"),
+    path(
+        "profile/liked/delete/",
+        views.delete_liked_places,
+        name="delete_liked_places",
+    ),
+    path(
+        "profile/hidden/restore/",
+        views.restore_hidden_places,
+        name="restore_hidden_places",
+    ),
     path("profile/<str:username>/", views.view_profile, name="view_profile"),
     path("signup/", views.signup, name="signup"),
     path("login/", ProfileLoginView.as_view(), name="login"),

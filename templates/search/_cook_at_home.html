@@ -1,0 +1,12 @@
+{% if cook_at_home.show %}
+<section class="cook-glass" aria-labelledby="cook-at-home-title">
+  <h3 id="cook-at-home-title" class="cook-glass__title">How about cooking today?</h3>
+  {% if cook_at_home.markets or cook_at_home.stores %}
+  <div class="cook-glass__chips">
+    {% for place in cook_at_home.markets %}<a class="cook-glass__chip" href="/search/?q={{ place.name|urlencode }}&amp;types=farmers_market" title="{{ place.borough }}{% if place.days %} · {{ place.days }}{% endif %}{% if place.hours %} · {{ place.hours }}{% endif %}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21c.5-4.5 2.5-8 7-10"/><path d="M9 18c6.2 0 10.5-3.3 11-12V4h-4.3C9 4 7 8.7 7 13v1c0 .6.4 1 1 1"/></svg>{{ place.name }}</a>{% endfor %}
+    {% for place in cook_at_home.stores %}<a class="cook-glass__chip" href="/search/?q={{ place.name|urlencode }}&amp;types=grocery" title="{{ place.borough }} · Shop Healthy"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 10l7-6 7 6"/><path d="M3 10h18l-2 9H5z"/></svg>{{ place.name }}</a>{% endfor %}
+  </div>
+  {% endif %}
+  <a class="cook-glass__link" href="{{ cook_at_home.find_food_url }}">Browse markets and healthy stores →</a>
+</section>
+{% endif %}

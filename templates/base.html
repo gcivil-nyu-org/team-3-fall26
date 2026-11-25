@@ -8,23 +8,33 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="{% static 'search/style.css' %}">
+  <link rel="stylesheet" href="{% static 'search/style.css' %}?v=18">
   {% block extra_head %}{% endblock %}
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Krona+One&family=Lexend:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=DM+Serif+Display&display=swap">
+  <link rel="stylesheet" href="{% static 'search/theme.css' %}?v=5">
+  <link rel="stylesheet" href="{% static 'search/fresh.css' %}?v=9">
+  <link rel="stylesheet" href="{% static 'assistant/chat.css' %}">
+  <script>window.__theme=function(){try{var t=localStorage.getItem('theme');if(t)return t}catch(e){}var m=document.cookie.match(/(?:^|; )theme=(\w+)/);return m?m[1]:'light'};(function(){if(window.__theme()==='dark')document.documentElement.setAttribute('data-theme','dark')})();</script>
+  <link rel="stylesheet" href="{% static 'search/late.css' %}?v=225">
 </head>
 <body>
   {% with view=request.resolver_match.view_name %}
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="{% url 'search:index' %}">
-        <span class="brand-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-        NYC Food Search
-      </a>
+      <a class="brand" href="{% url 'search:home' %}">Healthy Eats<span class="brand-nyc">NYC</span></a>
       <nav aria-label="Main">
-        <a href="{% url 'search:home' %}"{% if view == 'search:home' %} aria-current="page"{% endif %}>Home</a>
-        <a href="{% url 'search:index' %}"{% if view == 'search:index' or view == 'search:restaurant_detail' %} aria-current="page"{% endif %}>Find food</a>
+        
+        <a href="{% url 'search:home' %}"{% if view == 'search:home' or from_top_picks %} aria-current="page"{% endif %}>Top picks</a>
+        <a href="{% url 'search:index' %}"{% if view == 'search:index' or view == 'search:restaurant_detail' and not from_top_picks %} aria-current="page"{% endif %}>Search</a>
         {% if user.is_authenticated %}
-          <a href="{% url 'accounts:profile' %}"{% if view == 'accounts:profile' %} aria-current="page"{% endif %}>Profile</a>
-          <a href="{% url 'accounts:view_profile' user.username %}"{% if view == 'accounts:view_profile' %} aria-current="page"{% endif %}>{{ user.username }}</a>
+          {% if user.is_superuser %}
+            <a href="{% url 'accounts:admin_dashboard' %}"{% if view == 'accounts:admin_dashboard' or view == 'accounts:admin_user_detail' %} aria-current="page"{% endif %}>Admin</a>
+          {% else %}
+            <a href="{% url 'accounts:profile' %}"{% if view == 'accounts:profile' %} aria-current="page"{% endif %}>Profile</a>
+            {% comment %}
+            <a href="{% url 'accounts:view_profile' user.username %}"{% if view == 'accounts:view_profile' %} aria-current="page"{% endif %}>{{ user.username }}</a>
+            {% endcomment %}
+          {% endif %}
           <form class="nav-form" method="post" action="{% url 'accounts:logout' %}">
             {% csrf_token %}
             <button type="submit" class="nav-link-button">Log out</button>
@@ -33,17 +43,46 @@
           <a href="{% url 'accounts:login' %}"{% if view == 'accounts:login' %} aria-current="page"{% endif %}>Log in</a>
           <a href="{% url 'accounts:signup' %}"{% if view == 'accounts:signup' %} aria-current="page"{% endif %}>Sign up</a>
         {% endif %}
+              <button type="button" class="nav-link-button theme-toggle" id="theme-toggle" aria-label="Toggle night mode" title="Night / light mode"><svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><svg class="icon-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+        <script>
+          (function () {
+            var b = document.getElementById('theme-toggle'), r = document.documentElement;
+            b.addEventListener('click', function () {
+              var next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+              try { localStorage.setItem('theme', next); } catch (e) {}
+              document.cookie = 'theme=' + next + '; path=/; max-age=31536000';
+              if (document.getElementById('combined-map')) { /* step182: no reload */
+                if (next === 'dark') r.setAttribute('data-theme', 'dark'); else r.removeAttribute('data-theme');
+                window.dispatchEvent(new CustomEvent('sp-theme', { detail: next })); return; }
+              r.classList.add('theme-fade');
+              setTimeout(function () { r.classList.remove('theme-fade'); }, 700);
+              if (next === 'dark') r.setAttribute('data-theme', 'dark'); else r.removeAttribute('data-theme');
+            });
+          })();
+        </script>
       </nav>
     </div>
   </header>
   {% endwith %}
   <main class="wrap {% block main_class %}{% endblock %}">
     {% if messages %}
-      <ul class="messages">
+      <ul class="messages" id="flash-messages">
         {% for message in messages %}
           <li class="message {{ message.tags }}">{{ message }}</li>
         {% endfor %}
       </ul>
+      <script>
+        (function () {
+          var list = document.getElementById('flash-messages');
+          if (!list) return;
+          Array.prototype.forEach.call(list.children, function (item) {
+            setTimeout(function () {
+              item.classList.add('is-dismissing');
+              item.addEventListener('transitionend', function () { item.remove(); }, { once: true });
+            }, 5000);
+          });
+        })();
+      </script>
     {% endif %}
     {% block content %}{% endblock %}
   </main>
@@ -51,5 +90,183 @@
     Data from <a href="https://opendata.cityofnewyork.us/">NYC Open Data</a>.
   </footer>
   {% block scripts %}{% endblock %}
+  {% include "assistant/widget.html" %}
+<button type="button" class="to-top" id="to-top" aria-label="Back to top" title="Back to top"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+<script>
+  (function () {
+    var t = document.getElementById('to-top');
+    function upd() { t.classList.toggle('is-visible', window.scrollY > 400); }
+    window.addEventListener('scroll', upd, { passive: true }); upd();
+    t.addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
+  })();
+</script>
+<script id="ui-titlecase">
+  (function () {
+    var KEEP = {NYC:1,BBQ:1,LLC:1,INC:1,USA:1,NY:1,BK:1,II:1,III:1,KFC:1,BX:1,DC:1,CO:1,LP:1,LTD:1,NE:1,NW:1,SE:1,SW:1};
+    function title(t) {
+      return t
+        .replace(/[A-Z][A-Z']+/g, function (w) {
+          return KEEP[w] ? w : w.charAt(0) + w.slice(1).toLowerCase();
+        })
+        .replace(/(\d)(ST|ND|RD|TH)\b/g, function (m, d, x) { return d + x.toLowerCase(); });
+    }
+    function run() {
+      var sel = ".result h2, .result > .muted, .top-pick-card h3, .top-pick-card__address, .restaurant-card h2, .restaurant-card__description";
+      document.querySelectorAll(sel).forEach(function (el) {
+        var w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), n, nodes = [];
+        while ((n = w.nextNode())) nodes.push(n);
+        nodes.forEach(function (x) { x.nodeValue = title(x.nodeValue); });
+      });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run();
+  })();
+  </script>
+<script>
+  // 67: signup looks exactly like the Log in link.
+  (function () {
+    var nav = document.querySelector('.site-header nav');
+    if (!nav) return;
+    var su = nav.querySelector('a[href*="signup"]');
+    var li = Array.prototype.find.call(nav.querySelectorAll('a'), function (a) {
+      return a !== su && !a.hasAttribute('aria-current') && !a.classList.contains('is-active') && !a.classList.contains('active');
+    });
+    if (!su || !li) return;
+    var st = getComputedStyle(li);
+    ['color', 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'line-height', 'padding-top', 'padding-right',
+     'padding-bottom', 'padding-left', 'margin-top', 'margin-bottom', 'display', 'align-self', 'vertical-align',
+     'background-color', 'background-image', 'border-top-width', 'border-radius', 'box-shadow', 'text-decoration', 'height']
+      .forEach(function (k) { su.style.setProperty(k, st.getPropertyValue(k), 'important'); });
+    su.style.setProperty('-webkit-text-fill-color', st.getPropertyValue('color'), 'important');
+    // 104: current page (Sign up page) keeps the underline like other current links.
+    if (su.hasAttribute('aria-current') || location.pathname.indexOf('/signup') === 0) {
+      su.style.setProperty('text-decoration', 'underline', 'important');
+      su.style.setProperty('text-decoration-thickness', '3px', 'important');
+      su.style.setProperty('text-underline-offset', '10px', 'important');
+      su.style.setProperty('font-weight', '700', 'important');
+    }
+  })();
+</script>
+<script>
+  // 119: tag links - a Health+ tag opens the restaurant's score page.
+  (function () {
+    function placeOf(tag) {
+      var row = tag.closest("[data-key]");
+      if (row && /^google:/.test(row.dataset.key)) return row.dataset.key.slice(7);
+      var card = tag.closest('[id^="pick-"], [id^="r-"]');
+      if (card) return card.id.replace(/^(pick|r)-/, "");
+      var panel = tag.closest(".community-panel, .pp");
+      var link = panel && panel.querySelector('a[href^="/restaurant/"]');
+      if (link) return decodeURIComponent(link.getAttribute("href").split("/")[2] || "");
+      var fav = panel && panel.querySelector("[data-place]");
+      return fav ? fav.dataset.place : "";
+    }
+    document.addEventListener("click", function (e) {
+      var tag = e.target.closest(".sp-health, .hp-tag, .pp-health");
+      if (!tag) return;
+      var id = placeOf(tag);
+      if (!id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var url = "/restaurant/" + encodeURIComponent(id) + "/";
+      if (location.pathname.indexOf("/search") === 0) url += "?back=" + encodeURIComponent(location.pathname + location.search);
+      if (e.metaKey || e.ctrlKey) window.open(url, "_blank"); else window.location.href = url;
+    }, true);
+  })();
+</script>
+<script>
+  // step180: remember each plain button's own colors so hover/press keep them.
+  (function () {
+    function isPlain(bg) {
+      var m = bg.match(/rgba?\(([^)]+)\)/); if (!m) return true;
+      var p = m[1].split(",").map(parseFloat);
+      if (p.length > 3 && p[3] < 0.2) return true;
+      return p[0] + p[1] + p[2] > 600;   // white / near-white
+    }
+    function mark(btn) {
+      if (btn.matches('[aria-pressed], [class*="like"], [class*="fav"], [class*="heart"]')) { btn.classList.remove("is-plain", "is-solid"); return; } // step210
+      if (btn.dataset.plainChecked || btn.matches(":hover")) return;
+      btn.dataset.plainChecked = "1";
+      var st = getComputedStyle(btn);
+      if (!isPlain(st.backgroundColor) || (st.backgroundImage && st.backgroundImage !== "none")) return; // step227
+      btn.classList.add("is-plain");
+      btn.style.setProperty("--plain-bg", st.backgroundColor);
+      btn.style.setProperty("--plain-fg", st.color);
+      btn.style.setProperty("--plain-bd", st.borderTopColor);
+    }
+    function scan(root) { (root.querySelectorAll ? root.querySelectorAll("button") : []).forEach(mark); if (root.tagName === "BUTTON") mark(root); }
+    function start() {
+      scan(document);
+      new MutationObserver(function (ms) { ms.forEach(function (m) { m.addedNodes.forEach(function (n) { if (n.nodeType === 1) scan(n); }); }); })
+        .observe(document.body, { childList: true, subtree: true });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+  })();
+</script>
+<script>
+  // step201: remember colored buttons' own look (re-read when the theme flips).
+  (function () {
+    function plainBg(bg) {
+      var m = bg.match(/rgba?\(([^)]+)\)/); if (!m) return true;
+      var p = m[1].split(",").map(parseFloat);
+      return (p.length > 3 && p[3] < 0.2) || p[0] + p[1] + p[2] > 600;
+    }
+    function mark(btn) {
+      if (btn.matches('[aria-pressed], [class*="like"], [class*="fav"], [class*="heart"]')) { btn.classList.remove("is-plain", "is-solid"); return; } // step210
+      if (btn.matches(":hover") || btn.classList.contains("is-plain")) return;
+      btn.classList.remove("is-solid");
+      var st = getComputedStyle(btn);
+      if (plainBg(st.backgroundColor) && st.backgroundImage === "none") return;
+      btn.classList.add("is-solid");
+      btn.style.setProperty("--solid-bg", st.backgroundColor);
+      btn.style.setProperty("--solid-img", st.backgroundImage);
+      btn.style.setProperty("--solid-fg", st.color);
+      btn.style.setProperty("--solid-bd", st.borderTopColor);
+    }
+    function scan() { document.querySelectorAll('button, input[type="submit"]').forEach(mark); }
+    function start() {
+      scan();
+      new MutationObserver(function () { setTimeout(scan, 30); })
+        .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+      new MutationObserver(function (ms) {
+        ms.forEach(function (m) { m.addedNodes.forEach(function (n) {
+          if (n.nodeType !== 1) return;
+          if (n.matches('button, input[type="submit"]')) mark(n);
+          n.querySelectorAll && n.querySelectorAll('button, input[type="submit"]').forEach(mark);
+        }); });
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+  })();
+</script>
+<script>
+  // step203: Log in / Sign up links remember this page.
+  (function () {
+    if (/^\/(login|signup)/.test(location.pathname)) return;
+    function fix(a) {
+      var href = a.getAttribute("href") || "";
+      if (!/\/(login|signup)\/?(\?|$)/.test(href) || /[?&]next=/.test(href)) return;
+      a.setAttribute("href", href.split("?")[0] + "?next=" + encodeURIComponent(location.pathname + location.search));
+    }
+    document.addEventListener("click", function (e) { var a = e.target.closest && e.target.closest("a[href]"); if (a) fix(a); }, true);
+    document.querySelectorAll("a[href]").forEach(fix);
+  })();
+</script>
+<script>
+  // step214: mark text-style buttons by their label.
+  (function () {
+    var RE = /^\s*(show more|show less|see all|load more|more reviews|comment|reply|cancel)\b/i;
+    function mark(root) {
+      (root.querySelectorAll ? root.querySelectorAll("button") : []).forEach(function (b) {
+        if (!b.classList.contains("btn") && RE.test(b.textContent)) { b.classList.add("is-textbtn"); b.classList.remove("is-solid"); }
+      });
+    }
+    function start() {
+      mark(document);
+      new MutationObserver(function (ms) { ms.forEach(function (m) { m.addedNodes.forEach(function (n) { if (n.nodeType === 1) mark(n.parentNode || n); }); }); })
+        .observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+  })();
+</script>
 </body>
 </html>

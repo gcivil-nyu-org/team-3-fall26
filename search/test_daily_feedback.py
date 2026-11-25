@@ -1,0 +1,732 @@
+"""Daily rotation, cuisine diversity, and Like / Not interested feedback."""
+
+from datetime import date
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.contrib.auth.models import User
+from django.test import SimpleTestCase, TestCase
+from django.urls import reverse
+
+from accounts.models import MoodLog, UserProfile
+from accounts.mood import today_ny
+from community.keys import GOOGLE, google_key
+from community.models import (
+    CommunitySubject,
+    PlaceEnrichment,
+    PlaceReview,
+    RecommendationFeedback,
+    UserRating,
+)
+from search import views
+from search.recommend import (
+    FeedbackPrefs,
+    build_feedback_prefs,
+    daily_sample,
+    daily_seed,
+    feedback_adjustment,
+    pick_top,
+    score_restaurant,
+)
+from nycfood.test_utils import ALL_DATABASES, make_restaurant
+
+
+def item(name, score, cuisine, like_bonus=0.0):
+    return {"name": name, "score": score, "cuisine": cuisine, "like_bonus": like_bonus}
+
+
+class DailySampleTests(SimpleTestCase):
+    rows = [{"place_id": str(n)} for n in range(50)]
+
+    def test_same_seed_same_picks(self):
+        seed = daily_seed(date(2026, 11, 8), 7)
+        self.assertEqual(
+            daily_sample(self.rows, 9, seed), daily_sample(self.rows, 9, seed)
+        )
+
+    def test_new_day_new_picks(self):
+        monday = daily_sample(self.rows, 9, daily_seed(date(2026, 11, 9), 7))
+        tuesday = daily_sample(self.rows, 9, daily_seed(date(2026, 11, 10), 7))
+        self.assertEqual(len(monday), 9)
+        self.assertNotEqual(monday, tuesday)
+
+    def test_anonymous_seed_and_small_pools(self):
+        self.assertEqual(daily_seed(date(2026, 11, 8)), "2026-11-08:0")
+        self.assertEqual(daily_sample(self.rows[:3], 9, "x"), self.rows[:3])
+
+    def test_sample_keeps_original_order(self):
+        picked = daily_sample(self.rows, 9, "seed")
+        self.assertEqual(picked, sorted(picked, key=lambda row: int(row["place_id"])))
+
+
+class PickTopTests(SimpleTestCase):
+    def test_skips_repeated_cuisine(self):
+        chosen = pick_top(
+            [
+                item("Green Bowl", 90, "Salads"),
+                item("Leaf & Co", 88, "Salads"),
+                item("Poke Place", 80, "Hawaiian"),
+                item("Taqueria", 70, "Mexican"),
+            ]
+        )
+        names = [i["name"] for i in chosen]
+        self.assertEqual(names, ["Green Bowl", "Poke Place", "Taqueria"])
+
+    def test_refills_from_skipped_when_short(self):
+        chosen = pick_top(
+            [item("A", 90, "Salads"), item("B", 80, "Salads"), item("C", 70, "Thai")]
+        )
+        self.assertEqual([i["name"] for i in chosen], ["A", "C", "B"])
+
+    def test_blank_cuisines_are_not_merged(self):
+        chosen = pick_top([item("A", 3, ""), item("B", 2, ""), item("C", 1, "")])
+        self.assertEqual(len(chosen), 3)
+
+    def test_only_one_pick_uses_its_like_bonus(self):
+        chosen = pick_top(
+            [
+                item("Liked Mex", 95, "Mexican", like_bonus=9),  # 86 without bonus
+                item("Liked Thai", 94, "Thai", like_bonus=9),  # 85 without bonus
+                item("Salad", 88, "Salads"),
+                item("Poke", 87, "Hawaiian"),
+            ]
+        )
+        self.assertEqual([i["name"] for i in chosen], ["Liked Mex", "Salad", "Poke"])
+
+
+class FeedbackPrefsTests(SimpleTestCase):
+    def test_buttons_and_stars(self):
+        prefs = build_feedback_prefs(
+            explicit=[("1", "TAQUERIA", "Mexican", 1), ("2", "BURGER", "Burgers", -1)],
+            star_ratings=[
+                ("3", "PHO", "Vietnamese", 5),
+                ("4", "PIZZA", "Pizza", 1),
+                ("5", "DINER", "American", 3),
+            ],
+        )
+        self.assertEqual(
+            prefs.liked,
+            {"Mexican": [("1", "TAQUERIA")], "Vietnamese": [("3", "PHO")]},
+        )
+        self.assertEqual(prefs.hidden, {"2", "4"})
+        self.assertEqual(prefs.not_interested, {"Burgers": 1, "Pizza": 1})
+
+    def test_button_wins_over_star_rating(self):
+        prefs = build_feedback_prefs(
+            explicit=[("1", "TAQUERIA", "Mexican", -1)],
+            star_ratings=[("1", "TAQUERIA", "Mexican", 5)],
+        )
+        self.assertEqual(prefs.liked, {})
+        self.assertEqual(prefs.hidden, {"1"})
+
+    def test_like_bonus_is_capped(self):
+        liked = [("1", "TAQUERIA"), ("2", "B"), ("3", "C"), ("4", "D")]
+        prefs = FeedbackPrefs(liked={"Mexican": liked})
+        bonus, penalty, tag = feedback_adjustment("Mexican", prefs, "99")
+        self.assertEqual(
+            (bonus, penalty, tag), (0.3, 0.0, "Because you liked Taqueria")
+        )
+        self.assertEqual(feedback_adjustment("Thai", prefs, "99"), (0.0, 0.0, None))
+
+    def test_own_like_does_not_boost_itself(self):
+        prefs = FeedbackPrefs(liked={"Mexican": [("1", "TAQUERIA")]})
+        self.assertEqual(
+            feedback_adjustment("Mexican", prefs, "1"), (0.0, 0.0, "You liked this")
+        )
+
+    def test_cuisine_penalty_after_two_not_interested(self):
+        once = FeedbackPrefs(not_interested={"Pizza": 1})
+        twice = FeedbackPrefs(not_interested={"Pizza": 2})
+        self.assertEqual(feedback_adjustment("Pizza", once)[1], 0.0)
+        self.assertEqual(feedback_adjustment("Pizza", twice)[1], -0.2)
+
+    def test_score_shows_feedback_in_breakdown_and_tags(self):
+        prefs = FeedbackPrefs(liked={"Mexican": [("1", "TAQUERIA")]})
+        score, tags, breakdown = score_restaurant(
+            name="X", cuisine="Mexican", feedback=prefs
+        )
+        personal = next(p for p in breakdown["parts"] if p["key"] == "personal")
+        self.assertAlmostEqual(personal["value_0_1"], 0.6)  # 0.5 + one like
+        self.assertAlmostEqual(personal["points"], 12.0)  # 0.6 x 20%
+        self.assertEqual(tags[0], "Similar pick")
+        self.assertEqual(breakdown["similar_to"], "Taqueria")
+        self.assertIn("Similar to Taqueria, which you liked", breakdown["reasons"])
+        self.assertAlmostEqual(breakdown["like_bonus"], 2.0)
+        self.assertIn(("Similar to places you liked", "+0.10"), personal["steps"])
+
+
+class FeedbackViewTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        rows = [
+            ("1", "GREEN LEAF", "Salads", "2024-07-04"),
+            ("2", "LEAF AND CO", "Salads", "2024-07-03"),
+            ("3", "TAQUERIA", "Mexican", "2024-07-02"),
+            ("4", "THAI SPOT", "Thai", "2024-07-01"),
+        ]
+        for place_id, name, cuisine, _day in rows:
+            make_restaurant(
+                place_id,
+                name,
+                boro="Queens",
+                street="1 Main St",
+                zipcode="11101",
+                cuisine=cuisine,
+            )
+        self.user = User.objects.create_user("sam", "sam@example.com", "pw-12345!")
+
+    def picks(self):
+        response = self.client.get(reverse("search:home"))
+        return response, [p["name"] for p in response.context["top_picks"]]
+
+    def press(self, place_id, value):
+        return self.client.post(
+            reverse("search:pick_feedback", args=[place_id]), {"value": value}
+        )
+
+    def test_anonymous_sees_diverse_picks_and_no_buttons(self):
+        response, names = self.picks()
+        self.assertEqual(len(names), 3)
+        self.assertEqual(len({"GREEN LEAF", "LEAF AND CO"} & set(names)), 1)
+        self.assertNotContains(response, "top-pick-card__feedback")
+
+    def test_buttons_require_login(self):
+        response = self.press("1", "like")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("accounts:login"), response["Location"])
+        self.assertFalse(RecommendationFeedback.objects.exists())
+
+    def test_anonymous_hides_mood_pickers(self):
+        response, _names = self.picks()
+        self.assertNotContains(response, "mood-pick__btn")
+        self.assertContains(response, "Something new, every day")
+
+    def test_quick_checkin_requires_login(self):
+        response = self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "mood", "value": "4"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("accounts:login"), response["Location"])
+        self.assertFalse(MoodLog.objects.exists())
+
+    def test_quick_checkin_upserts_for_today(self):
+        self.client.force_login(self.user)
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "mood", "value": "2", "next": reverse("search:home")},
+        )
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "energy", "value": "1", "next": reverse("search:home")},
+        )
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "mood", "value": "5", "next": reverse("search:home")},
+        )
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "energy", "value": "4", "next": reverse("search:home")},
+        )
+        logs = MoodLog.objects.filter(user=self.user)
+        self.assertEqual(logs.count(), 1)
+        log = logs.get()
+        self.assertEqual(log.mood, 5)
+        self.assertEqual(log.energy_level, 4)
+        self.assertEqual(log.log_date, today_ny())
+        response, _names = self.picks()
+        self.assertContains(response, "mood-pick__btn")
+        self.assertContains(response, "Ready for something great?")
+
+    def test_home_and_profile_share_todays_mood(self):
+        self.client.force_login(self.user)
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "mood", "value": "4", "next": reverse("search:home")},
+        )
+        self.client.post(
+            reverse("accounts:quick_checkin"),
+            {"kind": "energy", "value": "2", "next": reverse("search:home")},
+        )
+        self.client.post(
+            reverse("accounts:profile"),
+            {"action": "log_mood", "mood": "3", "energy_level": "5"},
+        )
+        self.assertEqual(MoodLog.objects.filter(user=self.user).count(), 1)
+        log = MoodLog.objects.get(user=self.user)
+        self.assertEqual(log.mood, 3)
+        self.assertEqual(log.energy_level, 5)
+
+    def test_like_saves_and_pressing_again_undoes(self):
+        self.client.force_login(self.user)
+        self.press("3", "like")
+        saved = RecommendationFeedback.objects.get()
+        self.assertEqual((saved.place_id, saved.value), ("3", 1))
+        self.assertEqual((saved.name, saved.cuisine), ("TAQUERIA", "Mexican"))
+        response, _names = self.picks()
+        self.assertContains(response, 'aria-pressed="true"')
+        taqueria = next(
+            p for p in response.context["top_picks"] if p["name"] == "TAQUERIA"
+        )
+        self.assertEqual(taqueria["reason_tags"][0], "You liked this")
+        self.assertEqual(taqueria["like_bonus"], 0.0)
+        self.press("3", "like")
+        self.assertFalse(RecommendationFeedback.objects.exists())
+
+    def test_not_interested_hides_the_place(self):
+        self.client.force_login(self.user)
+        self.press("1", "not_interested")
+        _response, names = self.picks()
+        self.assertNotIn("GREEN LEAF", names)
+        self.assertEqual(len(names), 3)
+
+    def test_like_tags_similar_place(self):
+        make_restaurant(
+            "9",
+            "OLD TAQUERIA",
+            boro="Queens",
+            street="2 Main St",
+            zipcode="11101",
+            cuisine="Mexican",
+        )
+        RecommendationFeedback.objects.create(
+            user_id=self.user.pk,
+            place_id="9",
+            name="OLD TAQUERIA",
+            cuisine="Mexican",
+            value=RecommendationFeedback.LIKE,
+        )
+        self.client.force_login(self.user)
+        response, _names = self.picks()
+        taqueria = next(
+            p for p in response.context["top_picks"] if p["name"] == "TAQUERIA"
+        )
+        self.assertEqual(taqueria["reason_tags"][0], "Similar pick")
+        self.assertEqual(taqueria["similar_to"], "Old Taqueria")
+        self.assertContains(response, 'title="Because you liked Old Taqueria"')
+
+    def test_one_star_rating_hides_the_place(self):
+        subject = CommunitySubject.objects.create(kind=GOOGLE, key=google_key("1"))
+        UserRating.objects.create(subject=subject, user_id=self.user.pk, score=1)
+        self.client.force_login(self.user)
+        _response, names = self.picks()
+        self.assertNotIn("GREEN LEAF", names)
+
+    def test_unknown_value_and_restaurant(self):
+        self.client.force_login(self.user)
+        self.assertEqual(self.press("1", "love").status_code, 302)
+        self.assertFalse(RecommendationFeedback.objects.exists())
+        self.assertEqual(self.press("404", "like").status_code, 404)
+
+    def test_next_must_be_local(self):
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("search:pick_feedback", args=["1"]),
+            {"value": "like", "next": "https://evil.example.com/"},
+        )
+        self.assertEqual(response["Location"], reverse("search:home"))
+
+
+class DailyPoolTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        for n in range(60):
+            make_restaurant(
+                str(1000 + n),
+                f"PLACE {n}",
+                boro="Queens",
+                street="1 Main St",
+                zipcode="11101",
+                cuisine="American",
+            )
+
+    def pool(self, day):
+        seed = daily_seed(day, None)
+        return {
+            row["place_id"] for row in views._build_candidate_pool(None, None, seed)
+        }
+
+    def test_pool_rotates_daily_and_is_stable_within_a_day(self):
+        monday = self.pool(date(2026, 11, 9))
+        self.assertEqual(len(monday), views.POOL_SIZE)
+        self.assertEqual(monday, self.pool(date(2026, 11, 9)))
+        self.assertNotEqual(monday, self.pool(date(2026, 11, 10)))
+
+    def test_hidden_places_never_enter_the_pool(self):
+        prefs = FeedbackPrefs(hidden={str(1000 + n) for n in range(55)})
+        seed = daily_seed(date(2026, 11, 9), 1)
+        pool = {
+            row["place_id"] for row in views._build_candidate_pool(None, prefs, seed)
+        }
+        self.assertTrue(pool)
+        self.assertFalse(pool & prefs.hidden)
+
+
+def restaurant(place_id, name, cuisine, rating=4.2, **fields):
+    return make_restaurant(
+        place_id, name, boro="Queens", cuisine=cuisine, rating=rating, **fields
+    )
+
+
+class ExploreOrderTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        # A fixed "today" keeps the daily shuffle the same.
+        today = patch("search.views._today", return_value=date(2025, 3, 1))
+        today.start()
+        self.addCleanup(today.stop)
+
+    def order(self):
+        return [row["name"] for row in views._explore_rows()]
+
+    def test_best_first_using_db_data_only(self):
+        restaurant("10", "MCDONALD'S", "Hamburgers", rating=4.6)  # 2 - 1 - 2 = -1
+        restaurant("11", "OK DINER", "American", rating=4.1)  # 1
+        restaurant("12", "AMERICAN GRILL", "American", rating=4.7)  # 2
+        restaurant("13", "GREEN BOWL", "Salads", rating=4.6)  # 3
+        restaurant("14", "SO-SO PIZZA", "Pizza", rating=3.2)  # -1 - 1
+        with patch("search.views.enrich_place_id") as fetch:
+            names = self.order()
+        fetch.assert_not_called()
+        self.assertEqual(
+            names, ["GREEN BOWL", "AMERICAN GRILL", "OK DINER"] + names[3:]
+        )
+        self.assertEqual(set(names[3:]), {"MCDONALD'S", "SO-SO PIZZA"})
+
+    def test_rating_changes_the_order(self):
+        restaurant("20", "WAS GOOD", "American", rating=3.4)
+        restaurant("21", "STILL GOOD", "American", rating=4.5)
+        self.assertEqual(self.order(), ["STILL GOOD", "WAS GOOD"])
+
+    def test_ties_shuffle_daily_and_stay_put_within_a_day(self):
+        for n in range(30):
+            restaurant(str(5000 + n), f"PLACE {n:02d}", "American")
+        with patch("search.views._today", return_value=date(2026, 11, 9)):
+            monday = self.order()
+            self.assertEqual(monday, self.order())
+        with patch("search.views._today", return_value=date(2026, 11, 10)):
+            tuesday = self.order()
+        self.assertEqual(sorted(monday), sorted(tuesday))
+        self.assertNotEqual(monday, tuesday)
+        self.assertNotEqual(monday, sorted(monday))  # not alphabetical
+
+    def test_first_page_skips_places_already_in_top_picks(self):
+        for n in range(5):
+            restaurant(str(6000 + n), f"SPOT {n}", "American")
+        response = self.client.get(reverse("search:home"))
+        picked = {pick["place_id"] for pick in response.context["top_picks"]}
+        listed = {row["place_id"] for row in response.context["restaurants"]}
+        self.assertEqual(len(picked), 3)
+        self.assertFalse(picked & listed)
+        self.assertEqual(len(listed), 2)
+
+
+class BoroughTopPicksTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        cuisines = ["American", "Thai", "Salads", "Mexican"]
+        for n, boro in enumerate(["Brooklyn"] * 4 + ["Queens"] * 4):
+            make_restaurant(
+                str(7000 + n),
+                f"{boro.upper()} SPOT {n}",
+                boro=boro,
+                street="1 Main St",
+                zipcode="11201",
+                cuisine=cuisines[n % 4],
+            )
+
+    def test_selected_borough_keeps_top_picks_from_that_borough(self):
+        response = self.client.get(reverse("search:home"), {"boro": "Brooklyn"})
+        picks = response.context["top_picks"]
+        self.assertEqual(len(picks), 3)
+        self.assertEqual({pick["boro"] for pick in picks}, {"Brooklyn"})
+        self.assertContains(response, '<option value="Brooklyn" selected>')
+
+    def test_all_boroughs_title_and_mix(self):
+        response = self.client.get(reverse("search:home"))
+        self.assertEqual(len(response.context["top_picks"]), 3)
+        # The title's borough menu shows "New York" (all boroughs) selected.
+        self.assertContains(response, '<option value="">New York</option>')
+        self.assertNotContains(response, "selected>")
+
+    def test_no_top_picks_after_page_one(self):
+        for n in range(20):
+            make_restaurant(
+                str(8000 + n),
+                f"MORE {n}",
+                boro="Brooklyn",
+                street="1 Main St",
+                zipcode="11201",
+                cuisine="American",
+            )
+        response = self.client.get(
+            reverse("search:home"), {"boro": "Brooklyn", "page": 2}
+        )
+        self.assertEqual(response.context["top_picks"], [])
+
+    def test_home_borough_extras_only_when_it_matches(self):
+        user = User.objects.create_user("lee", "lee@example.com", "pw-12345!")
+        UserProfile.objects.create(user=user, home_address="Astoria, Queens")
+        self.client.force_login(user)
+        response = self.client.get(reverse("search:home"), {"boro": "Brooklyn"})
+        boros = {pick["boro"] for pick in response.context["top_picks"]}
+        self.assertEqual(boros, {"Brooklyn"})
+
+
+class MealOnlyTopPicksTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        restaurant("30", "STARBUCKS", "Coffee/Tea")
+        restaurant("31", "STARBUCKS #812", "American")
+        restaurant("32", "MAGNOLIA BAKERY", "Bakery Products/Desserts")
+        restaurant("33", "CARVEL", "Frozen Desserts")
+        restaurant("34", "GREEN JUICE BAR", "Juice, Smoothies, Fruit Salads")
+        restaurant("35", "TAQUERIA", "Mexican")
+        restaurant("36", "AMERICAN GRILL", "American")
+
+    def test_coffee_and_dessert_places_are_not_top_picks(self):
+        response = self.client.get(reverse("search:home"))
+        names = {pick["name"] for pick in response.context["top_picks"]}
+        self.assertEqual(names, {"GREEN JUICE BAR", "TAQUERIA", "AMERICAN GRILL"})
+
+    def test_explore_more_lists_them_lower(self):
+        order = [row["name"] for row in views._explore_rows()]
+        self.assertEqual(order[0], "GREEN JUICE BAR")  # rated 4.2 + healthy = 2
+        self.assertEqual(set(order[1:3]), {"TAQUERIA", "AMERICAN GRILL"})  # 1
+        self.assertEqual(
+            set(order[3:]),
+            {"STARBUCKS", "STARBUCKS #812", "MAGNOLIA BAKERY", "CARVEL"},  # 0
+        )
+
+
+class CuisineLabelTests(SimpleTestCase):
+    def test_healthy_cuisines_use_exact_cuisine_labels(self):
+        from search.recommend import HEALTHY_CUISINES, health_score
+
+        self.assertIn("Juice, Smoothies, Fruit Salads", HEALTHY_CUISINES)
+        self.assertIn("Soups/Salads/Sandwiches", HEALTHY_CUISINES)
+        self.assertNotIn("Juice/Smoothies", HEALTHY_CUISINES)
+        self.assertEqual(health_score("Juice, Smoothies, Fruit Salads", [], "X"), 0.7)
+
+
+class DisplayReviewTests(SimpleTestCase):
+    def review(self, text, rating=5):
+        return {"text": text, "author_name": "A", "rating": rating}
+
+    def test_prefers_the_healthiest_review(self):
+        from search.recommend import pick_display_review
+
+        reviews = [
+            self.review("Great service, nice staff."),
+            self.review("Fresh salad, light and healthy!", rating=4),
+            self.review("Fresh bowls."),
+            self.review("Healthy but greasy fries and fried chicken."),
+        ]
+        self.assertIs(pick_display_review(reviews), reviews[1])
+
+    def test_ties_keep_google_order(self):
+        from search.recommend import pick_display_review
+
+        reviews = [self.review("ok"), self.review("fresh"), self.review("healthy")]
+        self.assertIs(pick_display_review(reviews), reviews[1])
+
+    def test_falls_back_to_the_first_review(self):
+        from search.recommend import pick_display_review
+
+        reviews = [self.review(""), self.review("Nice staff."), self.review("Greasy")]
+        self.assertIs(pick_display_review(reviews), reviews[1])
+        self.assertIsNone(pick_display_review([]))
+
+    def test_only_four_and_five_star_reviews(self):
+        from search.recommend import pick_display_review
+
+        reviews = [
+            self.review("Fresh, healthy salad but rude staff.", rating=1),
+            self.review("Fresh and light.", rating=2),
+            self.review("Nice staff.", rating=4),
+            self.review("Healthy bowls.", rating=5),
+        ]
+        self.assertIs(pick_display_review(reviews), reviews[3])
+        self.assertIs(pick_display_review(reviews[:3]), reviews[2])
+        self.assertIsNone(pick_display_review(reviews[:2]))
+        self.assertIsNone(pick_display_review([{"text": "Fresh", "rating": None}]))
+
+    def test_goal_words_count(self):
+        from search.recommend import pick_display_review
+
+        reviews = [self.review("Nice place."), self.review("Lots of protein.")]
+        profile = SimpleNamespace(health_goals=["muscle-gain"])
+        self.assertIs(pick_display_review(reviews), reviews[0])
+        self.assertIs(pick_display_review(reviews, profile), reviews[1])
+
+
+class CardReviewTests(TestCase):
+    databases = ALL_DATABASES
+
+    def test_card_shows_the_healthy_review(self):
+        restaurant("40", "GREEN LEAF", "Salads")
+        place = PlaceEnrichment.objects.create(
+            kind=GOOGLE, key=google_key("40"), place_id="40"
+        )
+        for text, author, rating in (
+            ("Nice staff.", "A", 5),
+            ("So fresh and healthy.", "B", 4),
+        ):
+            PlaceReview.objects.create(
+                place=place, text=text, author_name=author, rating=rating
+            )
+        response = self.client.get(reverse("search:home"))
+        pick = response.context["top_picks"][0]
+        self.assertEqual(pick["review"]["text"], "So fresh and healthy.")
+
+
+class HealthyCandidateTests(TestCase):
+    databases = ALL_DATABASES
+
+    def pool(self, profile=None, seed="2026-11-10:0:"):
+        return [row["name"] for row in views._build_candidate_pool(profile, None, seed)]
+
+    def test_best_db_score_comes_first(self):
+        for n in range(30):  # plain cuisine
+            restaurant(str(9000 + n), f"PLAIN {n}", "American")
+        for n in range(9):  # healthy cuisine
+            restaurant(str(9100 + n), f"HEALTHY {n}", "Salads")
+        with patch("search.views._today", return_value=date(2026, 11, 9)):
+            names = self.pool()
+        self.assertEqual(len(names), views.POOL_SIZE)
+        cap = views.MAX_PER_CUISINE  # at most this many Salads come first
+        self.assertTrue(all(name.startswith("HEALTHY") for name in names[:cap]))
+        self.assertEqual(sum(name.startswith("HEALTHY") for name in names), 9)
+
+    def test_poorly_rated_places_are_left_out(self):
+        restaurant("9200", "POORLY RATED", "Salads", rating=3.4)
+        restaurant("9201", "WELL RATED", "American", rating=4.4)
+        self.assertEqual(self.pool(), ["WELL RATED"])
+
+    def test_home_borough_extras_skip_coffee_shops(self):
+        restaurant("9300", "TAQUERIA", "Mexican")
+        for n in range(5):
+            make_restaurant(
+                str(9310 + n),
+                f"STARBUCKS #{n}",
+                boro="Bronx",
+                street="1 Main St",
+                zipcode="10453",
+                cuisine="American",
+            )
+        profile = SimpleNamespace(
+            allergies="",
+            favorite_foods="",
+            home_address="Fordham, Bronx",
+        )
+        self.assertEqual(self.pool(profile), ["TAQUERIA"])
+
+
+class MoodPoolExtraTests(TestCase):
+    databases = ALL_DATABASES
+
+    def test_mood_boost_cuisines_by_check_in(self):
+        self.assertEqual(views._mood_boost_cuisines(None), set())
+        low = SimpleNamespace(mood=1, energy_level=1)
+        high = SimpleNamespace(mood=5, energy_level=5)
+        # 2H: low → comfort/hearty; high → light/healthy.
+        self.assertTrue(views._mood_boost_cuisines(low) & views.COMFORT_MOOD_CUISINES)
+        self.assertTrue(views._mood_boost_cuisines(low) & views.HEARTY_ENERGY_CUISINES)
+        self.assertEqual(
+            views._mood_boost_cuisines(high), set(views.LIGHT_ENERGY_CUISINES)
+        )
+        self.assertIn("BBQ", views._mood_boost_cuisines(low))
+        self.assertNotIn("BBQ", views._mood_boost_cuisines(high))
+
+    def test_low_strictness_injects_hearty_into_healthy_pool(self):
+        # Fill the cuisine-capped pool with healthy places so BBQ is crowded out
+        # unless mood extras pull it in.
+        healthy = [
+            "Salads",
+            "Vegetarian",
+            "Vegan",
+            "Mediterranean",
+            "Japanese",
+        ]
+        n = 0
+        for cuisine in healthy:
+            for _ in range(views.MAX_PER_CUISINE):
+                restaurant(str(9400 + n), f"{cuisine} {n}", cuisine)
+                n += 1
+        restaurant("9499", "RIB HOUSE", "BBQ")
+        seed = "2026-11-10:0:"
+        without = {
+            row["name"]
+            for row in views._build_candidate_pool(None, None, seed, mood_check_in=None)
+        }
+        with_mood = {
+            row["name"]
+            for row in views._build_candidate_pool(
+                None,
+                None,
+                seed,
+                mood_check_in=SimpleNamespace(mood=1, energy_level=1),
+            )
+        }
+        self.assertNotIn("RIB HOUSE", without)
+        self.assertIn("RIB HOUSE", with_mood)
+
+
+class ClaudePicksTests(TestCase):
+    databases = ALL_DATABASES
+
+    def setUp(self):
+        restaurant("50", "LUIGI", "Italian")
+        restaurant("51", "SOFIA", "Italian")
+        restaurant("52", "GREEN LEAF", "Salads")
+        self.user = User.objects.create_user("ai", "ai@example.com", "pw-12345!")
+        self.client.force_login(self.user)
+        self.ai = [
+            {"place_id": "50", "reason": "Your favorite cuisine."},
+            {"place_id": "51", "reason": "Also Italian."},
+        ]
+
+    def get(self, **params):
+        with patch("search.views.personalized_picks", return_value=self.ai):
+            return self.client.get(reverse("search:home"), params)
+
+    def test_claude_order_is_kept(self):
+        page = self.get()
+        self.assertEqual(
+            [p["place_id"] for p in page.context["top_picks"]], ["50", "51"]
+        )
+        self.assertContains(page, "Picked for you")
+
+    def test_claude_order_yields_to_scores_when_mood_check_in(self):
+        MoodLog.objects.create(
+            user=self.user, mood=5, energy_level=5, log_date=today_ny()
+        )
+        # Salad (52) should outrank Italian under high mood/energy (2H healthier).
+        self.ai = [
+            {"place_id": "50", "reason": "Your favorite cuisine."},
+            {"place_id": "52", "reason": "A salad spot."},
+            {"place_id": "51", "reason": "Also Italian."},
+        ]
+        page = self.get()
+        ids = [p["place_id"] for p in page.context["top_picks"]]
+        self.assertIn("52", ids)
+        self.assertLess(ids.index("52"), ids.index("50"))
+
+    def test_not_interested_drops_a_claude_pick(self):
+        RecommendationFeedback.objects.create(
+            user_id=self.user.pk,
+            place_id="50",
+            value=RecommendationFeedback.NOT_INTERESTED,
+        )
+        page = self.get()
+        self.assertEqual([p["place_id"] for p in page.context["top_picks"]], ["51"])
+
+    def test_selected_borough_uses_daily_picks(self):
+        page = self.get(boro="Queens")
+        self.assertFalse(page.context["personalized_picks"])
+        self.assertContains(page, '<option value="Queens" selected>')

@@ -5,11 +5,27 @@ from search import views
 app_name = "search"
 
 urlpatterns = [
-    path("", views.index, name="index"),
-    path("home/", views.home, name="home"),
-    path("restaurant/<str:camis>/", views.restaurant_detail, name="restaurant_detail"),
+    path("search/suggest/", views.search_suggest, name="suggest"),  # step222
+    path("", views.home, name="home"),
+    path("rerank/", views.rerank_top_picks, name="rerank_top_picks"),
+    path("location/", views.save_location, name="save_location"),
+    path("search/", views.index, name="index"),
+    path("search/panel/", views.place_panel, name="place_panel"),
     path(
-        "restaurant/<str:camis>/refresh-google/",
+        "restaurant/<str:place_id>/", views.restaurant_detail, name="restaurant_detail"
+    ),
+    path(
+        "restaurant/<str:place_id>/feedback/",
+        views.pick_feedback,
+        name="pick_feedback",
+    ),
+    path(
+        "restaurant/<str:place_id>/what-to-order/",
+        views.restaurant_what_to_order,
+        name="what_to_order",
+    ),
+    path(
+        "restaurant/<str:place_id>/refresh-google/",
         views.refresh_place,
         name="refresh_place",
     ),

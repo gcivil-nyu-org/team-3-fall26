@@ -2,7 +2,7 @@
 
 How code gets from GitHub to http://nycfood-team3.us-east-1.elasticbeanstalk.com. For the AWS setup itself (SSM secrets, IAM, troubleshooting), see `aws_deployment.md`.
 
-A push to `develop` on `gcivil-nyu-org/team-3-fall26` runs the test job, then the deploy job in `.github/workflows/ci.yml`. That job assumes the IAM role `github-nycfood-deploy` and runs `eb deploy nycfood-env`. Pull requests run tests only. The same workflow on a fork cannot assume the role.
+A push to `develop` on `gcivil-nyu-org/team-3-fall26` (normally a merged pull request) runs the test job, then the integration deploy job in `.github/workflows/ci.yml`. That job assumes the IAM role `github-nycfood-deploy` and runs `eb deploy Nycfood-env`. Pull requests, from the repo or from forks, run tests only and never deploy. Production deploys only on a push to `main`.
 
 ```
 GitHub (gcivil-nyu-org develop)
@@ -12,7 +12,7 @@ GitHub Actions: test, then eb deploy nycfood-env
    │
    ▼
 S3 bundle  ──►  EC2 instance
-                 │  download nyc_food.db and community.db
+                 │  download nyc_food.db, community.db and users.db
                  ▼
                live site
 ```
@@ -31,7 +31,7 @@ Because `.ebignore` exists, `eb deploy` zips the working directory, minus what `
 |----------------|------------|
 | Uncommitted edits, on a laptop `eb deploy` | Yes |
 | Commits not yet pushed to GitHub, on a laptop `eb deploy` | Yes |
-| `database/nyc_food.db` and `database/community.db` | No. `.ebignore` excludes `database/*.db`. The instance downloads both from the private database bucket |
+| `database/nyc_food.db`, `database/community.db` and `database/users.db` | No. `.ebignore` excludes `database/*.db`. The instance downloads all three from the private database bucket |
 | `.env` | No (excluded); live keys come from SSM |
 | `.venv/`, `database/datasets/`, notebooks, `md_guides/`, `deploy/` | No (excluded) |
 
@@ -40,6 +40,7 @@ Actions deploys the Git commit, so uncommitted laptop files are not in that bund
 ```bash
 aws s3 cp database/nyc_food.db s3://<database-bucket>/nyc_food.db
 aws s3 cp database/community.db s3://<database-bucket>/community.db
+aws s3 cp database/users.db s3://<database-bucket>/users.db
 ```
 
 ## Branches and environments
@@ -81,8 +82,8 @@ A `.env` file is only needed to run the site locally with Google features, not t
 
 ## Team rules
 
-- **Deploy from `develop` on `gcivil-nyu-org/team-3-fall26`.** A push there runs tests, then deploys. Announce laptop `eb deploy`s in the team chat so they do not overlap an Actions run.
-- **Merge first, deploy second.** Feature branches go through a PR into `develop`; don't deploy unmerged branches to `nycfood-env`.
+- **Deploy from `develop` on `gcivil-nyu-org/team-3-fall26`.** A push there (merging a PR) runs tests then deploys to integration; open PRs only run tests. Announce laptop `eb deploy`s in the team chat so they do not overlap an Actions run.
+- **Last successful deploy wins.** EB has no “newer commit” check. A later Actions run (or laptop deploy) can replace the live site with an older commit; use that on purpose for rollback, or re-run / re-push the commit you want live.
 - **Changing an API key** doesn't need a deploy: update it in SSM Parameter Store, then run `eb restart`.
 - **Changing the canonical databases** is an `aws s3 cp`, then a deploy so the instance downloads the new objects.
 
@@ -98,4 +99,6 @@ Or: EB console → `nycfood` → Application versions → select a version → D
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` deploys only when all of these are true: the `test` job succeeded, the event is a push, the branch is `develop`, and the repository is `gcivil-nyu-org/team-3-fall26`. The job assumes the `github-nycfood-deploy` IAM role through GitHub's OIDC provider and runs `eb deploy nycfood-env`. No AWS access keys are stored in the repository.
+`.github/workflows/ci.yml` deploys integration when `test` succeeded, the repository is `gcivil-nyu-org/team-3-fall26`, and the event is a push to `develop`. Pull requests (same-repo or fork) only run `test`; nothing is deployed until the PR is merged. The workflow does not use `pull_request_target`: running fork code with the deploy role is a "pwn request" risk, and `actions/checkout` refuses it by default.
+
+The job assumes the `github-nycfood-deploy` IAM role through GitHub's OIDC provider and runs `eb deploy Nycfood-env`. No AWS access keys are stored in the repository. The role trust policy only needs the `develop` and `main` branch subjects; the old `pull_request` subject (`repo:gcivil-nyu-org/team-3-fall26:pull_request`) is no longer used and can be removed.
