@@ -256,10 +256,10 @@
 <script>
   // step217 (replaces 207): ?focus=<key> -> open that place's panel right away.
   (function () {
-    var p = new URLSearchParams(location.search), key = p.get("focus");
+    var p = new URLSearchParams(location.search), key = p.get("focus"), fname = p.get("fname") || "";
     if (!key) return;
     document.documentElement.classList.add("sp-focusing");
-    p.delete("focus");
+    p.delete("focus"); p.delete("fname"); // step228
     history.replaceState(null, "", location.pathname + (p.toString() ? "?" + p : ""));
     function done() { document.documentElement.classList.remove("sp-focusing"); }
     setTimeout(done, 3000); // never stay hidden
@@ -267,8 +267,16 @@
     (function go() {
       var cards = document.querySelectorAll(".result[data-key]");
       var card = Array.prototype.find.call(cards, function (c) { return c.dataset.key === key; })
-        || (cards.length === 1 ? cards[0] : null);
-      if (!card || !window.maplibregl) { if (++tries < 80) return setTimeout(go, 50); return done(); }
+        || (p.get("q") && cards.length === 1 ? cards[0] : null);
+      if (!card || !window.maplibregl) {
+        if (++tries < 80) return setTimeout(go, 50);
+        // step228: not in the default results -> search its name (old way)
+        if (fname && !p.get("q")) {
+          location.replace("/search/?q=" + encodeURIComponent(fname) + "&focus=" + encodeURIComponent(key));
+          return;
+        }
+        return done();
+      }
       setTimeout(function () {
         card.click();
         var n = 0;

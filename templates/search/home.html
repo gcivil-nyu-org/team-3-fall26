@@ -381,7 +381,7 @@
       if (!m) return;
       e.preventDefault();
       var name = a.textContent.trim();
-      location.href = "/search/?q=" + encodeURIComponent(name) + "&focus=" + encodeURIComponent("camis:" + decodeURIComponent(m[1]));
+      location.href = "/search/?focus=" + encodeURIComponent("google:" + decodeURIComponent(m[1])) + "&fname=" + encodeURIComponent(name); // step228
     }, true);
   })();
 </script>
