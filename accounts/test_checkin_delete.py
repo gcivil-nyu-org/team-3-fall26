@@ -28,10 +28,10 @@ class PastCheckInTests(TestCase):
     def post(self, **data):
         return self.client.post(reverse("accounts:profile"), data)
 
-    def test_past_shows_delete_today_shows_edit(self):
+    def test_both_show_delete_only_today_shows_edit(self):
         response = self.client.get(reverse("accounts:profile"))
         self.assertContains(response, 'class="checkin-edit-btn"', count=1)
-        self.assertContains(response, 'class="checkin-del-btn"', count=1)
+        self.assertContains(response, 'class="checkin-del-btn"', count=2)  # step229
 
     def test_past_entry_cannot_be_edited(self):
         response = self.post(
@@ -53,3 +53,8 @@ class PastCheckInTests(TestCase):
         response = self.post(action="delete_mood", log_id=str(theirs.pk))
         self.assertEqual(response.status_code, 404)
         self.assertTrue(MoodLog.objects.filter(pk=theirs.pk).exists())
+
+    def test_delete_today(self):
+        response = self.post(action="delete_mood", log_id=str(self.today.pk))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MoodLog.objects.filter(pk=self.today.pk).exists())

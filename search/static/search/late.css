@@ -1234,3 +1234,6 @@ html[data-theme="dark"] body button.checkin-del-btn:hover { color: #e3a19f !impo
 @media (max-width: 640px) {
   .checkin-edit .checkin-edit__actions { grid-column: 1 !important; grid-row: auto !important; }
 }
+
+/* step229: Edit + Delete side by side on today's entry */
+.checkin-history .checkin-edit-btn + .checkin-del { margin-left: 2px !important; }
